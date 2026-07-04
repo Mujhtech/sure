@@ -1,6 +1,10 @@
 class Transaction < ApplicationRecord
   include Entryable, Transferable, Ruleable, Splittable
 
+  after_create_commit :record_mobile_sync_upsert
+  after_update_commit :record_mobile_sync_upsert
+  after_destroy_commit :record_mobile_sync_delete
+
   belongs_to :category, optional: true
   belongs_to :merchant, optional: true
 
@@ -349,6 +353,28 @@ class Transaction < ApplicationRecord
   end
 
   private
+
+    def record_mobile_sync_upsert
+      MobileSyncEvent.record!(
+        family: entry&.account&.family,
+        entity_type: "transaction",
+        entity_id: id,
+        operation: "upsert"
+      )
+    rescue StandardError => e
+      Rails.logger.warn("Mobile sync transaction event could not be recorded for #{id}: #{e.message}")
+    end
+
+    def record_mobile_sync_delete
+      MobileSyncEvent.record!(
+        family: entry&.account&.family,
+        entity_type: "transaction",
+        entity_id: id,
+        operation: "delete"
+      )
+    rescue StandardError => e
+      Rails.logger.warn("Mobile sync transaction delete event could not be recorded for #{id}: #{e.message}")
+    end
 
     def validate_attachments
       # Check attachment count limit

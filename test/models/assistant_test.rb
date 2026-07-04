@@ -183,6 +183,125 @@ class AssistantTest < ActiveSupport::TestCase
     end
   end
 
+  test "continues through multiple tool function call rounds before final response" do
+    @assistant.expects(:get_model_provider).with("gpt-4.1").returns(@provider).once
+
+    Assistant::Function::GetAccounts.any_instance.stubs(:call).returns(
+      { accounts: [ "Checking" ] }
+    ).once
+    Assistant::Function::GetBudget.any_instance.stubs(:call).returns(
+      { budgeted: 1000, spent: 750 }
+    ).once
+
+    call1_response_chunk = provider_response_chunk(
+      id: "tool_round_1",
+      model: "gpt-4.1",
+      messages: [],
+      function_requests: [
+        provider_function_request(
+          id: "tool_1",
+          call_id: "tool_1",
+          function_name: "get_accounts",
+          function_args: "{}"
+        )
+      ]
+    )
+    call1_response = provider_success_response(call1_response_chunk.data)
+
+    call2_response_chunk = provider_response_chunk(
+      id: "tool_round_2",
+      model: "gpt-4.1",
+      messages: [],
+      function_requests: [
+        provider_function_request(
+          id: "tool_2",
+          call_id: "tool_2",
+          function_name: "get_budget",
+          function_args: "{}"
+        )
+      ]
+    )
+    call2_response = provider_success_response(call2_response_chunk.data)
+
+    call3_text_chunks = [
+      provider_text_chunk("Your checking account is available, "),
+      provider_text_chunk("and you have spent $750 of $1,000.")
+    ]
+    call3_response_chunk = provider_response_chunk(
+      id: "final",
+      model: "gpt-4.1",
+      messages: [ provider_message(id: "final", text: call3_text_chunks.map(&:data).join) ],
+      function_requests: []
+    )
+    call3_response = provider_success_response(call3_response_chunk.data)
+
+    call_count = 0
+    @provider.expects(:chat_response).times(3).with do |_message, **options|
+      call_count += 1
+
+      case call_count
+      when 1
+        assert_empty options[:function_results]
+        options[:streamer].call(call1_response_chunk)
+      when 2
+        assert_equal(
+          [ "get_accounts" ],
+          options[:function_results].map { |result| result[:name] }
+        )
+        options[:streamer].call(call2_response_chunk)
+      when 3
+        assert_equal(
+          [ "get_accounts", "get_budget" ],
+          options[:function_results].map { |result| result[:name] }
+        )
+        call3_text_chunks.each { |text_chunk| options[:streamer].call(text_chunk) }
+        options[:streamer].call(call3_response_chunk)
+      end
+
+      true
+    end.returns(call1_response, call2_response, call3_response)
+
+    assert_difference "AssistantMessage.count", 1 do
+      @assistant.respond_to(@message)
+    end
+
+    message = @chat.messages.ordered.where(type: "AssistantMessage").last
+    assert_equal(
+      "Your checking account is available, and you have spent $750 of $1,000.",
+      message.content
+    )
+    assert_equal(
+      [ "get_accounts", "get_budget" ],
+      message.tool_calls.order(:created_at).map(&:function_name)
+    )
+  end
+
+  test "adds visible error when provider returns no text and no function requests" do
+    @assistant.expects(:get_model_provider).with("gpt-4.1").returns(@provider).once
+
+    empty_response_chunk = provider_response_chunk(
+      id: "empty",
+      model: "gpt-4.1",
+      messages: [],
+      function_requests: []
+    )
+    empty_response = provider_success_response(empty_response_chunk.data)
+
+    @provider.expects(:chat_response).with do |_message, **options|
+      options[:streamer].call(empty_response_chunk)
+      true
+    end.returns(empty_response)
+
+    @chat.expects(:add_error).with do |error|
+      assert_includes error.message, "empty response"
+      true
+    end
+
+    assert_no_difference "AssistantMessage.count" do
+      @assistant.respond_to(@message)
+    end
+  end
+
   test "for_chat returns Builtin by default" do
     assert_instance_of Assistant::Builtin, Assistant.for_chat(@chat)
   end
@@ -514,8 +633,77 @@ class AssistantTest < ActiveSupport::TestCase
     assert_not_nil tool_call_entry, "tool_call message missing from history"
     assert_not_nil tool_result_entry, "tool_result message missing from history"
     assert_equal "call_abc", tool_call_entry[:tool_calls].first[:id]
+    assert_equal "{\"foo\":\"bar\"}", tool_call_entry[:tool_calls].first.dig(:function, :arguments)
     assert_equal "call_abc", tool_result_entry[:tool_call_id]
     assert_equal "get_net_worth", tool_result_entry[:name]
+  end
+
+  test "conversation_history serializes multiple persisted assistant tool_calls as sequential pairs" do
+    assistant_msg = AssistantMessage.create!(
+      chat: @chat,
+      content: "I found a budget setup.",
+      ai_model: "gpt-4.1",
+      status: "complete"
+    )
+
+    assistant_time = @message.created_at - 1.minute
+    assistant_msg.update_columns(created_at: assistant_time, updated_at: assistant_time)
+
+    spending_tool_call = ToolCall::Function.create!(
+      message: assistant_msg,
+      provider_id: "call_spending",
+      provider_call_id: "call_spending",
+      function_name: "get_spending_summary",
+      function_arguments: { period: "month" },
+      function_result: { spent: 750, currency: "USD" }
+    )
+
+    budget_tool_call = ToolCall::Function.create!(
+      message: assistant_msg,
+      provider_id: "call_budget",
+      provider_call_id: "call_budget",
+      function_name: "get_budgets",
+      function_arguments: {},
+      function_result: { budgets: [] }
+    )
+
+    spending_tool_call.update_columns(
+      created_at: assistant_time + 1.second,
+      updated_at: assistant_time + 1.second
+    )
+    budget_tool_call.update_columns(
+      created_at: assistant_time + 2.seconds,
+      updated_at: assistant_time + 2.seconds
+    )
+
+    @assistant.expects(:get_model_provider).with("gpt-4.1").returns(@provider)
+
+    captured_history = nil
+    @provider.expects(:chat_response).with do |_prompt, **options|
+      captured_history = options[:messages]
+      options[:streamer].call(
+        provider_response_chunk(id: "1", model: "gpt-4.1", messages: [ provider_message(id: "1", text: "ok") ], function_requests: [])
+      )
+      true
+    end.returns(provider_success_response(
+      provider_response_chunk(id: "1", model: "gpt-4.1", messages: [ provider_message(id: "1", text: "ok") ], function_requests: []).data
+    ))
+
+    @assistant.respond_to(@message)
+
+    tool_history = captured_history.select do |entry|
+      (entry[:role] == "assistant" && entry[:tool_calls].present?) || entry[:role] == "tool"
+    end
+
+    assert_equal %w[assistant tool assistant tool], tool_history.map { |entry| entry[:role] }
+    assert_equal [ "call_spending" ], tool_history[0][:tool_calls].map { |tool_call| tool_call[:id] }
+    assert_equal "call_spending", tool_history[1][:tool_call_id]
+    assert_equal [ "call_budget" ], tool_history[2][:tool_calls].map { |tool_call| tool_call[:id] }
+    assert_equal "call_budget", tool_history[3][:tool_call_id]
+    assert_equal "{\"period\":\"month\"}", tool_history[0][:tool_calls].first.dig(:function, :arguments)
+    assert captured_history.any? { |entry|
+      entry[:role] == "assistant" && entry[:content] == "I found a budget setup."
+    }
   end
 
   private

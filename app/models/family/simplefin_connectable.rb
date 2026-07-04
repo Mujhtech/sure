@@ -9,13 +9,14 @@ module Family::SimplefinConnectable
     true # SimpleFin doesn't have regional restrictions like Plaid
   end
 
-  def create_simplefin_item!(setup_token:, item_name: nil)
+  def create_simplefin_item!(setup_token:, item_name: nil, sync_start_date: nil)
     simplefin_provider = Provider::Simplefin.new
     access_url = simplefin_provider.claim_access_url(setup_token)
 
     simplefin_item = simplefin_items.create!(
       name: item_name || "SimpleFin Connection",
-      access_url: access_url
+      access_url: access_url,
+      sync_start_date: sync_start_date
     )
 
     simplefin_item.sync_later

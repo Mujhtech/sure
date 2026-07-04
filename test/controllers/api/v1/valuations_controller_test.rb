@@ -267,6 +267,46 @@ class Api::V1::ValuationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
+  test "should preview valuation creation without writing entry" do
+    preview_date = Date.current + 10.days
+
+    assert_no_difference("@family.entries.valuations.count") do
+      post "/api/v1/valuations/preview",
+           params: {
+             valuation: {
+               account_id: @account.id,
+               amount: 12_000.00,
+               date: preview_date,
+               notes: "Preview only"
+             }
+           },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :success
+
+    response_data = JSON.parse(response.body)
+    assert_equal @account.id, response_data.dig("preview", "account", "id")
+    assert_equal "12000.0", response_data.dig("preview", "valuation", "amount")
+    assert_equal preview_date.to_s, response_data.dig("preview", "valuation", "date")
+    assert response_data.dig("preview", "reconciliation", "new_balance", "formatted").present?
+    assert response_data.dig("preview", "reconciliation").key?("balance_delta")
+  end
+
+  test "should reject valuation creation preview with read-only API key" do
+    post "/api/v1/valuations/preview",
+         params: {
+           valuation: {
+             account_id: @account.id,
+             amount: 12_000.00,
+             date: Date.current
+           }
+         },
+         headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
   # UPDATE action tests
   test "should update valuation with valid parameters" do
     entry = @valuation.entry
@@ -327,6 +367,88 @@ class Api::V1::ValuationsControllerTest < ActionDispatch::IntegrationTest
   test "should reject update without API key" do
     entry = @valuation.entry
     put api_v1_valuation_url(entry), params: { valuation: { amount: 15000.00 } }
+    assert_response :unauthorized
+  end
+
+  test "should preview valuation update without writing entry" do
+    entry = @valuation.entry
+    original_amount = entry.amount
+    preview_date = entry.date + 2.days
+
+    post "/api/v1/valuations/#{entry.id}/preview",
+         params: {
+           valuation: {
+             amount: 18_000.00,
+             date: preview_date,
+             notes: "Preview update"
+           }
+         },
+         headers: api_headers(@api_key)
+
+    assert_response :success
+
+    response_data = JSON.parse(response.body)
+    assert_equal entry.id, response_data.dig("preview", "valuation", "id")
+    assert_equal "18000.0", response_data.dig("preview", "valuation", "amount")
+    assert_equal preview_date.to_s, response_data.dig("preview", "valuation", "date")
+    assert response_data.dig("preview", "reconciliation", "new_balance", "formatted").present?
+    assert_equal original_amount, entry.reload.amount
+  end
+
+  test "should reject valuation update preview without amount and date" do
+    entry = @valuation.entry
+
+    post "/api/v1/valuations/#{entry.id}/preview",
+         params: { valuation: { amount: 18_000.00 } },
+         headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    response_data = JSON.parse(response.body)
+    assert_equal "validation_failed", response_data["error"]
+  end
+
+  test "should reject valuation update preview with read-only API key" do
+    entry = @valuation.entry
+
+    post "/api/v1/valuations/#{entry.id}/preview",
+         params: { valuation: { amount: 18_000.00, date: Date.current } },
+         headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  # DESTROY action tests
+  test "should destroy valuation" do
+    entry = @valuation.entry
+
+    assert_difference("@family.entries.valuations.count", -1) do
+      delete api_v1_valuation_url(entry), headers: api_headers(@api_key)
+    end
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal "Valuation deleted successfully", response_data["message"]
+    assert_not @family.entries.exists?(entry.id)
+  end
+
+  test "should reject destroy with read-only API key" do
+    entry = @valuation.entry
+
+    delete api_v1_valuation_url(entry), headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+    assert @family.entries.exists?(entry.id)
+  end
+
+  test "should reject destroy for non-existent valuation" do
+    delete api_v1_valuation_url(SecureRandom.uuid), headers: api_headers(@api_key)
+
+    assert_response :not_found
+  end
+
+  test "should reject destroy without API key" do
+    delete api_v1_valuation_url(@valuation.entry)
+
     assert_response :unauthorized
   end
 

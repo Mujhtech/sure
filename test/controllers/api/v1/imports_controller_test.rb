@@ -3,6 +3,20 @@
 require "test_helper"
 
 class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
+  SAMPLE_QIF = <<~QIF
+    !Type:Bank
+    D1/ 2'24
+    T-12.50
+    PCoffee Shop
+    LCafes/Mobile
+    ^
+    D1/ 3'24
+    T-20.00
+    PGrocery Store
+    LGroceries/Weekly
+    ^
+  QIF
+
   setup do
     @user = users(:family_admin)
     @family = @user.family
@@ -120,6 +134,108 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
                  json_response["data"]["stats"]["unassigned_mappings_count"]
   end
 
+  test "should download sample CSV for CSV-backed import" do
+    get "/api/v1/imports/#{@diagnostic_import.id}/sample_csv", headers: api_headers(@read_only_api_key)
+
+    assert_response :success
+    assert_equal "text/csv", response.media_type
+    assert_match "attachment", response.headers["Content-Disposition"]
+    assert_match "transaction_sample.csv", response.headers["Content-Disposition"]
+    assert_includes response.body, "date*,amount*,name"
+    assert_includes response.body, "Grocery Store"
+  end
+
+  test "should require authentication for sample CSV download" do
+    get "/api/v1/imports/#{@diagnostic_import.id}/sample_csv"
+
+    assert_response :unauthorized
+  end
+
+  test "should require read scope for sample CSV download" do
+    api_key_without_read = ApiKey.new(
+      user: @user,
+      name: "No Read Sample CSV Key",
+      scopes: [],
+      source: "web",
+      display_key: "no_read_sample_#{SecureRandom.hex(8)}"
+    )
+    api_key_without_read.save!(validate: false)
+
+    get "/api/v1/imports/#{@diagnostic_import.id}/sample_csv", headers: api_headers(api_key_without_read)
+
+    assert_response :forbidden
+  ensure
+    api_key_without_read&.destroy
+  end
+
+  test "should reject sample CSV download for non CSV-backed import" do
+    qif_import = create_qif_import
+
+    get "/api/v1/imports/#{qif_import.id}/sample_csv", headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    json_response = JSON.parse(response.body)
+    assert_equal "unsupported_import_type", json_response["error"]
+  end
+
+  test "should not expose another family's sample CSV" do
+    other_family = Family.create!(name: "Other Sample CSV Family", currency: "USD", locale: "en")
+    other_import = other_family.imports.create!(type: "TransactionImport", raw_file_str: "date,amount,name")
+
+    get "/api/v1/imports/#{other_import.id}/sample_csv", headers: api_headers(@api_key)
+
+    assert_response :not_found
+    json_response = JSON.parse(response.body)
+    assert_equal "not_found", json_response["error"]
+  end
+
+  test "should show PDF import processing details" do
+    statement = AccountStatement.create_from_upload!(
+      family: @family,
+      account: @account,
+      file: Rack::Test::UploadedFile.new(
+        Rails.root.join("test/fixtures/files/imports/sample_bank_statement.pdf"),
+        "application/pdf"
+      )
+    )
+    pdf_import = PdfImport.create_from_statement!(statement: statement)
+    pdf_import.update!(
+      status: "pending",
+      ai_summary: "Bank statement with extracted transactions",
+      document_type: "bank_statement",
+      extracted_data: {
+        "transactions" => [
+          {
+            "date" => "2024-01-15",
+            "amount" => "-50.00",
+            "name" => "Coffee Shop",
+            "category" => "Food & Drink",
+            "notes" => "Morning coffee"
+          }
+        ]
+      },
+      rows_count: 1
+    )
+
+    get api_v1_import_url(pdf_import), headers: api_headers(@api_key)
+
+    assert_response :success
+    json_response = JSON.parse(response.body)
+    pdf_details = json_response.dig("data", "pdf_import")
+
+    assert_equal true, pdf_details["pdf_uploaded"]
+    assert_equal "sample_bank_statement.pdf", pdf_details["pdf_filename"]
+    assert_equal true, pdf_details["ai_processed"]
+    assert_equal "bank_statement", pdf_details["document_type"]
+    assert_equal "Bank statement with extracted transactions", pdf_details["ai_summary"]
+    assert_equal true, pdf_details["statement_with_transactions"]
+    assert_equal true, pdf_details["has_extracted_transactions"]
+    assert_equal 1, pdf_details["extracted_transactions_count"]
+    assert_equal true, pdf_details["rows_ready_for_review"]
+    assert_equal statement.id, pdf_details.dig("account_statement", "id")
+    assert_equal download_api_v1_account_statement_path(statement), pdf_details.dig("account_statement", "download_path")
+  end
+
   test "should show Sure import verification" do
     sure_import = @family.imports.create!(type: "SureImport")
     sure_import.ndjson_file.attach(
@@ -159,6 +275,71 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, verification.dig("readback", "actual_delta_counts", "valuations")
     assert_equal 0, verification.dig("readback", "checked_counts", "balances")
     assert_empty verification.dig("readback", "mismatches")
+  end
+
+  test "should update import account assignment" do
+    import = @family.imports.create!(
+      type: "TransactionImport",
+      status: "pending",
+      raw_file_str: "date,amount,name\n01/15/2024,-10.00,Grocery Run"
+    )
+
+    patch api_v1_import_url(import),
+          params: { import: { account_id: @account.id } },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    assert_equal @account.id, import.reload.account_id
+    assert_equal @account.id, JSON.parse(response.body).dig("data", "account_id")
+  end
+
+  test "should update pdf import account and linked statement" do
+    statement = AccountStatement.create_from_upload!(
+      family: @family,
+      account: nil,
+      file: Rack::Test::UploadedFile.new(
+        Rails.root.join("test/fixtures/files/imports/sample_bank_statement.pdf"),
+        "application/pdf"
+      )
+    )
+    pdf_import = PdfImport.create_from_statement!(statement: statement)
+
+    patch api_v1_import_url(pdf_import),
+          params: { account_id: @account.id },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    assert_equal @account.id, pdf_import.reload.account_id
+    assert_equal @account.id, statement.reload.account_id
+  end
+
+  test "should reject import account assignment with read-only key" do
+    import = @family.imports.create!(type: "TransactionImport", status: "pending")
+
+    patch api_v1_import_url(import),
+          params: { import: { account_id: @account.id } },
+          headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+    assert_nil import.reload.account_id
+  end
+
+  test "should reject import account assignment outside family" do
+    other_account = families(:empty).accounts.create!(
+      owner: users(:empty),
+      name: "Other Import Account",
+      balance: 0,
+      currency: "USD",
+      accountable: Depository.new
+    )
+    import = @family.imports.create!(type: "TransactionImport", status: "pending")
+
+    patch api_v1_import_url(import),
+          params: { import: { account_id: other_account.id } },
+          headers: api_headers(@api_key)
+
+    assert_response :not_found
+    assert_nil import.reload.account_id
   end
 
   test "should list sanitized import row diagnostics" do
@@ -224,6 +405,203 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
     json_response = JSON.parse(response.body)
 
     assert_equal [ 6, 7, 8 ], json_response["data"].map { |row| row["row_number"] }
+  end
+
+  test "should update import configuration and regenerate rows" do
+    patch "/api/v1/imports/#{@diagnostic_import.id}/configuration",
+          params: {
+            import: {
+              date_col_label: "date",
+              amount_col_label: "amount",
+              name_col_label: "name",
+              category_col_label: "category",
+              tags_col_label: "tags",
+              date_format: "%m/%d/%Y",
+              rows_to_skip: 0
+            }
+          },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    json_response = JSON.parse(response.body)
+    assert_equal @diagnostic_import.id, json_response.dig("data", "id")
+    assert_equal "date", json_response.dig("data", "configuration", "date_col_label")
+    assert_equal 1, @diagnostic_import.reload.rows_count
+    assert_equal "Grocery Run", @diagnostic_import.rows.first.name
+  end
+
+  test "should refresh import configuration rows_to_skip only" do
+    patch "/api/v1/imports/#{@diagnostic_import.id}/configuration",
+          params: {
+            refresh_only: true,
+            import: { rows_to_skip: 2 }
+          },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    json_response = JSON.parse(response.body)
+    assert_equal 2, @diagnostic_import.reload.rows_to_skip
+    assert_equal 2, json_response.dig("data", "stats", "rows_count")
+  end
+
+  test "should reject import configuration update with read-only API key" do
+    patch "/api/v1/imports/#{@diagnostic_import.id}/configuration",
+          params: { import: { rows_to_skip: 1 } },
+          headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should apply suggested import template" do
+    @family.imports.create!(
+      type: "TransactionImport",
+      status: "complete",
+      account: @account,
+      raw_file_str: "posted,amount,description\n01/10/2024,-12.00,Coffee",
+      date_col_label: "posted",
+      amount_col_label: "amount",
+      name_col_label: "description",
+      category_col_label: "category",
+      tags_col_label: "labels",
+      date_format: "%m/%d/%Y",
+      number_format: "1,234.56",
+      signage_convention: "inflows_positive",
+      rows_to_skip: 1
+    )
+
+    post "/api/v1/imports/#{@diagnostic_import.id}/apply_template", headers: api_headers(@api_key)
+
+    assert_response :success
+    json_response = JSON.parse(response.body)
+
+    @diagnostic_import.reload
+    assert_equal "posted", @diagnostic_import.date_col_label
+    assert_equal "description", @diagnostic_import.name_col_label
+    assert_equal "labels", @diagnostic_import.tags_col_label
+    assert_equal "%m/%d/%Y", @diagnostic_import.date_format
+    assert_equal 1, @diagnostic_import.rows_to_skip
+    assert_equal "posted", json_response.dig("data", "configuration", "date_col_label")
+  end
+
+  test "should reject apply template with read-only API key" do
+    post "/api/v1/imports/#{@diagnostic_import.id}/apply_template", headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should return validation error when no suggested import template exists" do
+    other_account = @family.accounts.create!(
+      name: "Template-less Checking",
+      balance: 0,
+      currency: "USD",
+      accountable: Depository.new
+    )
+    import = @family.imports.create!(
+      type: "TransactionImport",
+      status: "pending",
+      account: other_account,
+      raw_file_str: "date,amount,name\n01/10/2024,-12.00,Coffee"
+    )
+
+    post "/api/v1/imports/#{import.id}/apply_template", headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    json_response = JSON.parse(response.body)
+    assert_equal "template_not_found", json_response["error"]
+  end
+
+  test "should update import row and resync mappings" do
+    patch "/api/v1/imports/#{@diagnostic_import.id}/rows/#{@diagnostic_row.id}",
+          params: {
+            import_row: {
+              name: "Updated Grocery Run",
+              category: "Mobile Groceries",
+              tags: "Mobile|Edited"
+            }
+          },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    json_response = JSON.parse(response.body)
+
+    assert_equal @diagnostic_row.id, json_response.dig("data", "id")
+    assert_equal "Updated Grocery Run", json_response.dig("data", "fields", "name")
+    assert_equal "Mobile Groceries", @diagnostic_row.reload.category
+    assert Import::CategoryMapping.exists?(import: @diagnostic_import, key: "Mobile Groceries")
+    assert Import::TagMapping.exists?(import: @diagnostic_import, key: "Edited")
+  end
+
+  test "should reject import row update with read-only API key" do
+    patch "/api/v1/imports/#{@diagnostic_import.id}/rows/#{@diagnostic_row.id}",
+          params: { import_row: { name: "Blocked" } },
+          headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should return not found for missing import row update" do
+    patch "/api/v1/imports/#{@diagnostic_import.id}/rows/#{SecureRandom.uuid}",
+          params: { import_row: { name: "Missing" } },
+          headers: api_headers(@api_key)
+
+    assert_response :not_found
+  end
+
+  test "should update import mapping to an existing mappable" do
+    category = @family.categories.create!(name: "Mapped Mobile Category", color: "#407706", lucide_icon: "shopping-basket")
+    mapping = Import::CategoryMapping.find_by!(import: @diagnostic_import, key: @diagnostic_category_name)
+
+    patch "/api/v1/imports/#{@diagnostic_import.id}/mappings/#{mapping.id}",
+          params: {
+            import_mapping: {
+              mappable_id: category.id
+            }
+          },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    json_response = JSON.parse(response.body)
+
+    assert_equal mapping.id, json_response.dig("data", "id")
+    assert_equal category.id, json_response.dig("data", "mappable", "id")
+    assert_equal category.id, mapping.reload.mappable_id
+  end
+
+  test "should update import mapping to create when empty" do
+    mapping = Import::TagMapping.find_by!(import: @diagnostic_import, key: "Weekly")
+
+    patch "/api/v1/imports/#{@diagnostic_import.id}/mappings/#{mapping.id}",
+          params: {
+            import_mapping: {
+              mappable_id: Import::Mapping::CREATE_NEW_KEY
+            }
+          },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    json_response = JSON.parse(response.body)
+
+    assert_equal true, json_response.dig("data", "create_when_empty")
+    assert_equal true, mapping.reload.create_when_empty
+    assert_nil mapping.mappable
+  end
+
+  test "should reject import mapping update with read-only API key" do
+    mapping = Import::CategoryMapping.find_by!(import: @diagnostic_import, key: @diagnostic_category_name)
+
+    patch "/api/v1/imports/#{@diagnostic_import.id}/mappings/#{mapping.id}",
+          params: { import_mapping: { mappable_id: @diagnostic_category.id } },
+          headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should return not found for missing import mapping update" do
+    patch "/api/v1/imports/#{@diagnostic_import.id}/mappings/#{SecureRandom.uuid}",
+          params: { import_mapping: { mappable_id: @diagnostic_category.id } },
+          headers: api_headers(@api_key)
+
+    assert_response :not_found
   end
 
   test "should not expose another family's import rows" do
@@ -343,6 +721,178 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "2024-01-01", row.effective_date
     assert_equal '[{"condition_type":"transaction_name","operator":"like","value":"grocery"}]', row.conditions
     assert_equal '[{"action_type":"set_transaction_category","value":"Groceries"}]', row.actions
+  end
+
+  test "should create QIF import with uploaded file" do
+    qif_file = Rack::Test::UploadedFile.new(
+      StringIO.new(SAMPLE_QIF),
+      "application/octet-stream",
+      original_filename: "mobile.qif"
+    )
+
+    assert_difference("Import.count", 1) do
+      assert_difference("Import::Row.count", 2) do
+        post api_v1_imports_url,
+             params: {
+               type: "QifImport",
+               account_id: @account.id,
+               file: qif_file
+             },
+             headers: api_headers(@api_key)
+      end
+    end
+
+    assert_response :created
+
+    json_response = JSON.parse(response.body)
+    import = Import.find(json_response["data"]["id"])
+
+    assert_instance_of QifImport, import
+    assert_equal @account.id, import.account_id
+    assert_equal 2, import.rows_count
+    assert_equal "Coffee Shop", import.rows.order(:source_row_number).first.name
+    assert_equal "Bank", import.qif_account_type
+  end
+
+  test "should reject QIF import without account" do
+    assert_no_difference("Import.count") do
+      post api_v1_imports_url,
+           params: {
+             type: "QifImport",
+             raw_file_content: SAMPLE_QIF
+           },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :unprocessable_entity
+    json_response = JSON.parse(response.body)
+    assert_equal "account_required", json_response["error"]
+  end
+
+  test "should create PDF import with account assignment" do
+    assert_difference("PdfImport.count", 1) do
+      assert_difference("AccountStatement.count", 1) do
+        post api_v1_imports_url,
+             params: {
+               type: "PdfImport",
+               account_id: @account.id,
+               file: Rack::Test::UploadedFile.new(
+                 Rails.root.join("test/fixtures/files/imports/sample_bank_statement.pdf"),
+                 "application/pdf"
+               )
+             },
+             headers: api_headers(@api_key)
+      end
+    end
+
+    assert_response :created
+    import = PdfImport.find(JSON.parse(response.body).dig("data", "id"))
+    assert_equal @account.id, import.account_id
+    assert_equal @account.id, import.account_statement.account_id
+  end
+
+  test "should create PDF import when PDF file is uploaded without explicit type" do
+    assert_difference("PdfImport.count", 1) do
+      post api_v1_imports_url,
+           params: {
+             file: Rack::Test::UploadedFile.new(
+               Rails.root.join("test/fixtures/files/imports/sample_bank_statement.pdf"),
+               "application/pdf"
+             )
+           },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :created
+    import = Import.find(JSON.parse(response.body).dig("data", "id"))
+    assert_instance_of PdfImport, import
+  end
+
+  test "should reject invalid PDF import file" do
+    invalid_file = Rack::Test::UploadedFile.new(
+      StringIO.new("not a pdf"),
+      "application/pdf",
+      original_filename: "invalid.pdf"
+    )
+
+    assert_no_difference("Import.count") do
+      post api_v1_imports_url,
+           params: {
+             type: "PdfImport",
+             file: invalid_file
+           },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :unprocessable_entity
+    json_response = JSON.parse(response.body)
+    assert_equal "invalid_pdf", json_response["error"]
+  end
+
+  test "should show QIF category selection summary" do
+    qif_import = create_qif_import
+
+    get "/api/v1/imports/#{qif_import.id}/qif_category_selection", headers: api_headers(@read_only_api_key)
+
+    assert_response :success
+    data = JSON.parse(response.body)["data"]
+
+    assert_equal qif_import.id, data["import_id"]
+    assert_equal "Bank", data["qif_account_type"]
+    assert_equal "%m/%d/%Y", data["qif_date_format"]
+    assert_equal true, data["categories_selected"]
+    assert_equal [ "Cafes", "Groceries" ], data["categories"].map { |category| category["name"] }
+    assert_equal 1, data["categories"].find { |category| category["name"] == "Cafes" }["count"]
+    assert_equal [ "Mobile", "Weekly" ], data["tags"].map { |tag| tag["name"] }
+    assert data["date_formats"].any? { |format| format["selected"] && format["format"] == "%m/%d/%Y" }
+  end
+
+  test "should update QIF category selection and resync mappings" do
+    qif_import = create_qif_import
+
+    patch "/api/v1/imports/#{qif_import.id}/qif_category_selection",
+          params: {
+            qif_category_selection: {
+              categories: [ "Groceries" ],
+              tags: [ "Weekly" ]
+            }
+          },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+
+    qif_import.reload
+    coffee_row = qif_import.rows.find_by!(name: "Coffee Shop")
+    grocery_row = qif_import.rows.find_by!(name: "Grocery Store")
+
+    assert_equal "", coffee_row.category
+    assert_equal "", coffee_row.tags
+    assert_equal "Groceries", grocery_row.category
+    assert_equal "Weekly", grocery_row.tags
+    assert_not Import::CategoryMapping.exists?(import: qif_import, key: "Cafes")
+    assert_not Import::TagMapping.exists?(import: qif_import, key: "Mobile")
+
+    data = JSON.parse(response.body)["data"]
+    assert_equal [ "Groceries" ], data["categories"].map { |category| category["name"] }
+    assert_equal [ "Weekly" ], data["tags"].map { |tag| tag["name"] }
+  end
+
+  test "should reject QIF category selection update with read-only API key" do
+    qif_import = create_qif_import
+
+    patch "/api/v1/imports/#{qif_import.id}/qif_category_selection",
+          params: { qif_category_selection: { categories: [ "Groceries" ] } },
+          headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should reject QIF category selection for non-QIF import" do
+    get "/api/v1/imports/#{@diagnostic_import.id}/qif_category_selection", headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    json_response = JSON.parse(response.body)
+    assert_equal "unsupported_import_type", json_response["error"]
   end
 
   test "should create Sure import with raw NDJSON content" do
@@ -1377,10 +1927,116 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
     assert_response :created
   end
 
+  test "should publish import" do
+    Import.any_instance.expects(:publish_later).returns(true)
+
+    post publish_api_v1_import_url(@diagnostic_import), headers: api_headers(@api_key)
+
+    assert_response :accepted
+    json_response = JSON.parse(response.body)
+    assert_equal @diagnostic_import.id, json_response.dig("data", "id")
+  end
+
+  test "should reject publish with read-only API key" do
+    post publish_api_v1_import_url(@diagnostic_import), headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should return validation error when import cannot be published" do
+    Import.any_instance.stubs(:publish_later).raises(StandardError, "Import is not publishable")
+
+    post publish_api_v1_import_url(@diagnostic_import), headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    json_response = JSON.parse(response.body)
+    assert_equal "not_publishable", json_response["error"]
+    assert_equal "Import could not be queued for processing.", json_response["message"]
+  end
+
+  test "should return max row count error when publish exceeds row limit" do
+    Import.any_instance.stubs(:publish_later).raises(Import::MaxRowCountExceededError)
+
+    post publish_api_v1_import_url(@diagnostic_import), headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    json_response = JSON.parse(response.body)
+    assert_equal "max_row_count_exceeded", json_response["error"]
+  end
+
+  test "should revert import" do
+    @diagnostic_import.update!(status: "complete")
+    Import.any_instance.expects(:revert_later).returns(true)
+
+    post revert_api_v1_import_url(@diagnostic_import), headers: api_headers(@api_key)
+
+    assert_response :accepted
+    json_response = JSON.parse(response.body)
+    assert_equal @diagnostic_import.id, json_response.dig("data", "id")
+  end
+
+  test "should reject revert with read-only API key" do
+    post revert_api_v1_import_url(@diagnostic_import), headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should return validation error when import cannot be reverted" do
+    Import.any_instance.stubs(:revert_later).raises(StandardError, "Import is not revertable")
+
+    post revert_api_v1_import_url(@diagnostic_import), headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    json_response = JSON.parse(response.body)
+    assert_equal "not_revertable", json_response["error"]
+    assert_equal "Import could not be queued for revert.", json_response["message"]
+  end
+
+  test "should destroy import" do
+    import = @family.imports.create!(type: "TransactionImport", status: "pending")
+
+    assert_difference("@family.imports.count", -1) do
+      delete api_v1_import_url(import), headers: api_headers(@api_key)
+    end
+
+    assert_response :success
+    json_response = JSON.parse(response.body)
+    assert_equal "Import deleted successfully", json_response["message"]
+  end
+
+  test "should reject destroy with read-only API key" do
+    delete api_v1_import_url(@diagnostic_import), headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should return not found for missing import lifecycle actions" do
+    post publish_api_v1_import_url(SecureRandom.uuid), headers: api_headers(@api_key)
+    assert_response :not_found
+
+    post revert_api_v1_import_url(SecureRandom.uuid), headers: api_headers(@api_key)
+    assert_response :not_found
+
+    delete api_v1_import_url(SecureRandom.uuid), headers: api_headers(@api_key)
+    assert_response :not_found
+  end
+
   private
 
     def build_ndjson(records)
       records.map(&:to_json).join("\n")
+    end
+
+    def create_qif_import
+      @family.imports.create!(
+        type: "QifImport",
+        account: @account,
+        raw_file_str: SAMPLE_QIF
+      ).tap do |import|
+        import.generate_rows_from_csv
+        import.sync_mappings
+        import.reload
+      end
     end
 
     def api_headers(api_key)

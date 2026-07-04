@@ -73,7 +73,10 @@ if ARGV.include?("--compliance")
       basename = File.basename(path, "_spec.rb")
       next if basename == "auth"
       content = File.read(path)
-      if content.include?("Doorkeeper") || content.include?("Bearer") || content.include?("access_token")
+      if content.match?(/security\s+\[\s*\{\s*(oauth|bearer)Auth:/i) ||
+         content.match?(/let\(\s*:['"]Authorization['"]\s*\)/) ||
+         content.match?(/['"]Authorization['"]\s*=>/) ||
+         content.match?(/Authorization:\s*['"]Bearer/i)
         rswag_oauth << "#{basename}_spec.rb"
       end
       rswag_assertions << "#{basename}_spec.rb" if content.include?("expect(") || content.include?("assert_")

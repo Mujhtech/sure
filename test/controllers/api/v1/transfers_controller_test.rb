@@ -15,6 +15,13 @@ class Api::V1::TransfersControllerTest < ActionDispatch::IntegrationTest
       source: "web",
       display_key: "test_read_#{SecureRandom.hex(8)}"
     )
+    @read_write_api_key = ApiKey.create!(
+      user: @user,
+      name: "Test Read Write Key",
+      scopes: [ "read_write" ],
+      source: "mobile",
+      display_key: "test_rw_#{SecureRandom.hex(8)}"
+    )
 
     @account = @family.accounts.create!(
       name: "Transfer Checking",
@@ -158,6 +165,80 @@ class Api::V1::TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_includes transfer_ids, date_matched_transfer.id
     assert_includes transfer_ids, partial_date_transfer.id
     assert_not_includes transfer_ids, @transfer.id
+  end
+
+  test "creates a transfer" do
+    assert_difference("Transfer.count", 1) do
+      post api_v1_transfers_url,
+           params: {
+             transfer: {
+               from_account_id: @account.id,
+               to_account_id: @destination_account.id,
+               amount: 25,
+               date: "2024-03-01"
+             }
+           },
+           headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :created
+    response_data = JSON.parse(response.body)
+    assert_equal "confirmed", response_data["status"]
+    assert_equal 2500, response_data["amount_cents"]
+  end
+
+  test "updates transfer notes and status" do
+    patch api_v1_transfer_url(@transfer),
+          params: { transfer: { status: "confirmed", notes: "Updated by mobile" } },
+          headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal "confirmed", response_data["status"]
+    assert_equal "Updated by mobile", response_data["notes"]
+  end
+
+  test "rejects a transfer" do
+    pending_transfer = Transfer.create!(
+      outflow_transaction: create_transaction(@account, amount: 20, date: Date.parse("2024-03-02"), name: "Pending outflow"),
+      inflow_transaction: create_transaction(@destination_account, amount: -20, date: Date.parse("2024-03-02"), name: "Pending inflow"),
+      status: "pending"
+    )
+
+    assert_difference("RejectedTransfer.count", 1) do
+      patch api_v1_transfer_url(pending_transfer),
+            params: { transfer: { status: "rejected" } },
+            headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :ok
+    assert_not Transfer.exists?(pending_transfer.id)
+  end
+
+  test "destroys a transfer" do
+    assert_difference("Transfer.count", -1) do
+      delete api_v1_transfer_url(@transfer), headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :ok
+  end
+
+  test "marks transfer as recurring" do
+    assert_difference("@family.recurring_transactions.count", 1) do
+      post mark_as_recurring_api_v1_transfer_url(@transfer), headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :created
+    response_data = JSON.parse(response.body)
+    assert_equal @account.id, response_data.dig("account", "id")
+  end
+
+  test "rejects transfer mutation with read-only key" do
+    patch api_v1_transfer_url(@transfer),
+          params: { transfer: { notes: "Blocked" } },
+          headers: api_headers(@api_key)
+
+    assert_response :forbidden
   end
 
   test "requires authentication" do

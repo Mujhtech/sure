@@ -4,7 +4,8 @@ module Api
   module V1
     class MerchantsController < BaseController
       before_action -> { authorize_scope!(:read) }, only: [ :index, :show ]
-      before_action -> { authorize_scope!(:write) }, only: [ :create ]
+      before_action -> { authorize_scope!(:write) }, only: [ :create, :update, :destroy, :merge, :enhance ]
+      before_action :set_merchant, only: [ :update, :destroy ]
 
       def index
         family = current_resource_owner.family
@@ -50,10 +51,24 @@ module Api
       end
 
       def create
+        if params[:merchant].present?
+          @merchant = current_resource_owner.family.merchants.new(merchant_params)
+
+          if @merchant.save
+            return render json: merchant_json(@merchant), status: :created
+          end
+
+          return render json: {
+            error: "validation_failed",
+            message: "Merchant could not be created",
+            errors: @merchant.errors.full_messages
+          }, status: :unprocessable_entity
+        end
+
         family = current_resource_owner.family
 
         unless params[:file].present?
-          return render json: { error: "missing_file", message: "Please provide a CSV file." },
+          return render json: { error: "missing_file", message: "Please provide a merchant payload or CSV file." },
                         status: :unprocessable_entity
         end
 
@@ -124,13 +139,147 @@ module Api
                status: :internal_server_error
       end
 
+      def update
+        attrs = merchant_params
+
+        if @merchant.is_a?(ProviderMerchant)
+          if attrs[:name].present? && attrs[:name] != @merchant.name
+            @merchant = @merchant.convert_to_family_merchant_for(current_resource_owner.family, attrs)
+          else
+            @merchant.update!(attrs.slice(:website_url))
+            @merchant.generate_logo_url_from_website!
+          end
+        else
+          @merchant.update!(attrs)
+        end
+
+        render json: merchant_json(@merchant)
+      rescue ActiveRecord::RecordInvalid => e
+        render json: {
+          error: "validation_failed",
+          message: "Merchant could not be updated",
+          errors: e.record.errors.full_messages
+        }, status: :unprocessable_entity
+      end
+
+      def destroy
+        if @merchant.is_a?(ProviderMerchant)
+          @merchant.unlink_from_family(current_resource_owner.family)
+        else
+          @merchant.destroy!
+        end
+
+        render json: { message: "Merchant deleted successfully" }, status: :ok
+      end
+
+      def merge
+        merge_params = merchant_merge_params
+        target_id = merge_params[:target_id].to_s
+        source_ids = Array(merge_params[:source_ids]).map(&:to_s).reject(&:blank?).uniq
+
+        if target_id.present? && source_ids.include?(target_id)
+          render_validation_error("Target merchant cannot also be a source merchant")
+          return
+        end
+
+        target = writable_merchants.find_by(id: target_id)
+        unless target
+          render_validation_error("Target merchant not found")
+          return
+        end
+
+        unless source_ids.any?
+          render_validation_error("No source merchants selected")
+          return
+        end
+
+        sources = writable_merchants.where(id: source_ids).to_a
+        if sources.size != source_ids.size
+          render_validation_error("One or more source merchants were not found")
+          return
+        end
+
+        merger = Merchant::Merger.new(
+          family: current_resource_owner.family,
+          target_merchant: target,
+          source_merchants: sources
+        )
+
+        unless merger.merge!
+          render_validation_error("No source merchants selected")
+          return
+        end
+
+        render json: {
+          message: "Merchants merged successfully",
+          merged_count: merger.merged_count,
+          merchant: merchant_json(target.reload)
+        }, status: :ok
+      rescue Merchant::Merger::UnauthorizedMerchantError => e
+        render_validation_error(e.message)
+      rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotDestroyed => e
+        render_validation_error(record_error_message(e))
+      end
+
+      def enhance
+        family = current_resource_owner.family
+        cache_key = "enhance_provider_merchants:#{family.id}"
+        already_running = !Rails.cache.write(cache_key, true, expires_in: 10.minutes, unless_exist: true)
+
+        if already_running
+          render json: {
+            error: "enhance_already_running",
+            message: "Merchant enhancement is already running"
+          }, status: :unprocessable_entity
+          return
+        end
+
+        EnhanceProviderMerchantsJob.perform_later(family)
+
+        render json: {
+          message: "Merchant enhancement started",
+          enhanceable_count: enhanceable_provider_merchants_count
+        }, status: :accepted
+      end
+
       private
+
+        def set_merchant
+          unless valid_uuid?(params[:id])
+            render json: { error: "not_found", message: "Merchant not found" }, status: :not_found
+            return
+          end
+
+          @merchant = writable_merchants.find_by(id: params[:id])
+          return if @merchant
+
+          render json: { error: "not_found", message: "Merchant not found" }, status: :not_found
+        end
+
+        def writable_merchants
+          family = current_resource_owner.family
+          family_merchant_ids = family.merchants.select(:id)
+          provider_merchant_ids = family.assigned_merchants_for(current_resource_owner).where(type: "ProviderMerchant").select(:id)
+
+          Merchant.where(id: family_merchant_ids).or(Merchant.where(id: provider_merchant_ids))
+        end
+
+        def merchant_params
+          params.require(:merchant).permit(:name, :color, :website_url)
+        end
+
+        def merchant_merge_params
+          params.permit(:target_id, source_ids: [])
+        end
 
         def merchant_json(merchant)
           {
             id: merchant.id,
             name: merchant.name,
             type: merchant.type,
+            color: merchant.respond_to?(:color) ? merchant.color : nil,
+            logo_url: merchant.respond_to?(:logo_url) ? merchant.logo_url : nil,
+            website_url: merchant.respond_to?(:website_url) ? merchant.website_url : nil,
             created_at: merchant.created_at,
             updated_at: merchant.updated_at
           }
@@ -147,6 +296,18 @@ module Api
 
         def normalize(str)
           str.to_s.strip.downcase.gsub(/\*/, "").gsub(/[\s_-]+/, "_")
+        end
+
+        def enhanceable_provider_merchants_count
+          current_resource_owner.family
+            .assigned_merchants_for(current_resource_owner)
+            .where(type: "ProviderMerchant", website_url: [ nil, "" ])
+            .count
+        end
+
+        def record_error_message(error)
+          record = error.respond_to?(:record) ? error.record : nil
+          record&.errors&.full_messages&.to_sentence.presence || error.message
         end
     end
   end

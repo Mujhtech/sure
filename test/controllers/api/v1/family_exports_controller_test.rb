@@ -101,6 +101,39 @@ class Api::V1::FamilyExportsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "insufficient_scope", JSON.parse(response.body)["error"]
   end
 
+  test "deletes a family export" do
+    export = @family.family_exports.create!(status: "completed")
+
+    assert_difference("@family.family_exports.count", -1) do
+      delete api_v1_family_export_url(export), headers: api_headers(@api_key)
+    end
+
+    assert_response :success
+    assert_equal "Family export deleted successfully", JSON.parse(response.body)["message"]
+  end
+
+  test "read-only key cannot delete a family export" do
+    export = @family.family_exports.create!(status: "completed")
+
+    assert_no_difference("@family.family_exports.count") do
+      delete api_v1_family_export_url(export), headers: api_headers(@read_only_api_key)
+    end
+
+    assert_response :forbidden
+    assert_equal "insufficient_scope", JSON.parse(response.body)["error"]
+  end
+
+  test "non-admin cannot delete a family export" do
+    export = @family.family_exports.create!(status: "completed")
+
+    assert_no_difference("@family.family_exports.count") do
+      delete api_v1_family_export_url(export), headers: api_headers(@member_api_key)
+    end
+
+    assert_response :forbidden
+    assert_equal "forbidden", JSON.parse(response.body)["error"]
+  end
+
   test "create rejects unsupported params" do
     assert_no_difference("@family.family_exports.count") do
       post api_v1_family_exports_url,

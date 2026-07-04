@@ -1,6 +1,10 @@
 class Entry < ApplicationRecord
   include Monetizable, Enrichable
 
+  after_create_commit :record_mobile_sync_transaction_upsert
+  after_update_commit :record_mobile_sync_transaction_upsert
+  after_destroy_commit :record_mobile_sync_transaction_delete
+
   TRUTHY_VALUES = [ true, "true", "1", 1 ].freeze
   private_constant :TRUTHY_VALUES
 
@@ -511,6 +515,32 @@ class Entry < ApplicationRecord
   end
 
   private
+
+    def record_mobile_sync_transaction_upsert
+      return unless entryable_type == "Transaction"
+
+      MobileSyncEvent.record!(
+        family: account&.family,
+        entity_type: "transaction",
+        entity_id: entryable_id,
+        operation: "upsert"
+      )
+    rescue StandardError => e
+      Rails.logger.warn("Mobile sync entry event could not be recorded for #{id}: #{e.message}")
+    end
+
+    def record_mobile_sync_transaction_delete
+      return unless entryable_type == "Transaction"
+
+      MobileSyncEvent.record!(
+        family: account&.family,
+        entity_type: "transaction",
+        entity_id: entryable_id,
+        operation: "delete"
+      )
+    rescue StandardError => e
+      Rails.logger.warn("Mobile sync entry delete event could not be recorded for #{id}: #{e.message}")
+    end
 
     def cannot_unexclude_split_parent
       return unless excluded_changed?(from: true, to: false) && split_parent?

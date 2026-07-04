@@ -15,8 +15,16 @@ class Api::V1::RulesControllerTest < ActionDispatch::IntegrationTest
       source: "web",
       display_key: "test_read_#{SecureRandom.hex(8)}"
     )
+    @read_write_api_key = ApiKey.create!(
+      user: @user,
+      name: "Test Read Write Key",
+      scopes: [ "read_write" ],
+      source: "mobile",
+      display_key: "test_rw_#{SecureRandom.hex(8)}"
+    )
 
     Redis.new.del("api_rate_limit:#{@api_key.id}")
+    Redis.new.del("api_rate_limit:#{@read_write_api_key.id}")
 
     @rule = @family.rules.build(
       name: "Coffee cleanup",
@@ -121,6 +129,136 @@ class Api::V1::RulesControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, rule["actions"].length
     assert_equal "set_transaction_name", rule["actions"].first["action_type"]
     assert_equal "Coffee", rule["actions"].first["value"]
+  end
+
+  test "should create rule" do
+    assert_difference("@family.rules.count", 1) do
+      post api_v1_rules_url,
+           params: {
+             rule: {
+               name: "Mobile groceries",
+               resource_type: "transaction",
+               active: false,
+               conditions_attributes: [
+                 { condition_type: "transaction_name", operator: "like", value: "market" }
+               ],
+               actions_attributes: [
+                 { action_type: "set_transaction_name", value: "Groceries" }
+               ]
+             }
+           },
+           headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :created
+    rule = JSON.parse(response.body)["data"]
+    assert_equal "Mobile groceries", rule["name"]
+    assert_equal false, rule["active"]
+    assert_equal "transaction_name", rule["conditions"].first["condition_type"]
+    assert_equal "set_transaction_name", rule["actions"].first["action_type"]
+  end
+
+  test "should reject create with read-only key" do
+    post api_v1_rules_url,
+         params: {
+           rule: {
+             name: "Read-only create",
+             resource_type: "transaction",
+             conditions_attributes: [
+               { condition_type: "transaction_name", operator: "like", value: "market" }
+             ],
+             actions_attributes: [
+               { action_type: "set_transaction_name", value: "Groceries" }
+             ]
+           }
+         },
+         headers: api_headers(@api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should reject unsupported resource type on create" do
+    post api_v1_rules_url,
+         params: {
+           rule: {
+             name: "Bad rule",
+             resource_type: "account",
+             actions_attributes: [
+               { action_type: "set_transaction_name", value: "Groceries" }
+             ]
+           }
+         },
+         headers: api_headers(@read_write_api_key)
+
+    assert_response :unprocessable_entity
+    assert_equal "validation_failed", JSON.parse(response.body)["error"]
+  end
+
+  test "should update rule" do
+    patch api_v1_rule_url(@rule),
+          params: {
+            rule: {
+              name: "Updated coffee cleanup",
+              active: false,
+              actions_attributes: [
+                { id: @rule.actions.first.id, action_type: "set_transaction_name", value: "Cafe" }
+              ]
+            }
+          },
+          headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    @rule.reload
+
+    assert_equal "Updated coffee cleanup", @rule.name
+    assert_not @rule.active?
+    assert_equal "Cafe", @rule.actions.first.value
+  end
+
+  test "should delete rule" do
+    assert_difference("@family.rules.count", -1) do
+      delete api_v1_rule_url(@rule), headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :success
+  end
+
+  test "should apply rule asynchronously" do
+    @rule.update!(active: false)
+
+    assert_enqueued_jobs 1, only: RuleJob do
+      post apply_api_v1_rule_url(@rule), headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :accepted
+    assert @rule.reload.active?
+  end
+
+  test "should apply all rules asynchronously" do
+    assert_enqueued_jobs 1, only: ApplyAllRulesJob do
+      post apply_all_api_v1_rules_url, headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :accepted
+  end
+
+  test "should clear ai cache asynchronously" do
+    assert_enqueued_jobs 1, only: ClearAiCacheJob do
+      post clear_ai_cache_api_v1_rules_url, headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :accepted
+  end
+
+  test "should destroy all family rules" do
+    deleted_count = @family.rules.count
+
+    assert_difference("@family.rules.count", -deleted_count) do
+      delete destroy_all_api_v1_rules_url, headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :success
+    assert_equal deleted_count, JSON.parse(response.body)["deleted_count"]
   end
 
   test "should require authentication when showing a rule" do

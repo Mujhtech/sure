@@ -111,4 +111,105 @@ RSpec.describe 'API V1 Merchants', type: :request do
       end
     end
   end
+
+  path '/api/v1/merchants/merge' do
+    post 'Merge merchants' do
+      description 'Move family transactions from source merchants to a target merchant, then delete source family merchants while preserving provider merchants.'
+      tags 'Merchants'
+      security [ { apiKeyAuth: [] } ]
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :body, in: :body, required: true, schema: {
+        '$ref' => '#/components/schemas/MerchantMergeRequest'
+      }
+
+      let!(:source_merchant) { family.merchants.create!(name: 'Old Coffee Shop') }
+
+      response '200', 'merchants merged' do
+        schema '$ref' => '#/components/schemas/MerchantMergeResponse'
+
+        let(:body) { { target_id: family_merchant.id, source_ids: [ source_merchant.id ] } }
+
+        run_test!
+      end
+
+      response '422', 'invalid merge request' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:body) { { target_id: family_merchant.id, source_ids: [ family_merchant.id ] } }
+
+        run_test!
+      end
+
+      response '403', 'forbidden - api key missing read_write scope' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:read_only_api_key) do
+          key = ApiKey.generate_secure_key
+          ApiKey.create!(
+            user: user,
+            name: 'API Docs Read Key',
+            key: key,
+            scopes: %w[read],
+            source: 'mobile'
+          )
+        end
+        let(:'X-Api-Key') { read_only_api_key.plain_key }
+        let(:body) { { target_id: family_merchant.id, source_ids: [ source_merchant.id ] } }
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/merchants/enhance' do
+    post 'Start provider merchant enhancement' do
+      description 'Queue a background job to enrich assigned provider merchants that are missing website metadata.'
+      tags 'Merchants'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      response '202', 'merchant enhancement started' do
+        schema '$ref' => '#/components/schemas/MerchantEnhanceResponse'
+
+        before do
+          Rails.cache.delete("enhance_provider_merchants:#{family.id}")
+        end
+
+        run_test!
+      end
+
+      response '422', 'merchant enhancement already running' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        before do
+          Rails.cache.write("enhance_provider_merchants:#{family.id}", true, expires_in: 10.minutes)
+        end
+
+        after do
+          Rails.cache.delete("enhance_provider_merchants:#{family.id}")
+        end
+
+        run_test!
+      end
+
+      response '403', 'forbidden - api key missing read_write scope' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:read_only_api_key) do
+          key = ApiKey.generate_secure_key
+          ApiKey.create!(
+            user: user,
+            name: 'API Docs Read Key',
+            key: key,
+            scopes: %w[read],
+            source: 'mobile'
+          )
+        end
+        let(:'X-Api-Key') { read_only_api_key.plain_key }
+
+        run_test!
+      end
+    end
+  end
 end

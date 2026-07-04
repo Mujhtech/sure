@@ -15,6 +15,13 @@ class Api::V1::BudgetCategoriesControllerTest < ActionDispatch::IntegrationTest
       source: "web",
       display_key: "test_read_#{SecureRandom.hex(8)}"
     )
+    @read_write_api_key = ApiKey.create!(
+      user: @user,
+      name: "Test Read Write Key",
+      scopes: [ "read_write" ],
+      source: "mobile",
+      display_key: "test_rw_#{SecureRandom.hex(8)}"
+    )
 
     @budget = @family.budgets.create!(
       start_date: 5.months.ago.beginning_of_month.to_date,
@@ -127,6 +134,25 @@ class Api::V1::BudgetCategoriesControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     response_data = JSON.parse(response.body)
     assert_equal "validation_failed", response_data["error"]
+  end
+
+  test "updates a budget category allocation" do
+    patch api_v1_budget_category_url(@budget_category),
+          params: { budget_category: { budgeted_spending: 750 } },
+          headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal 75000, response_data["budgeted_spending_cents"]
+    assert_equal 750, @budget_category.reload.budgeted_spending
+  end
+
+  test "rejects budget category update with read-only key" do
+    patch api_v1_budget_category_url(@budget_category),
+          params: { budget_category: { budgeted_spending: 750 } },
+          headers: api_headers(@api_key)
+
+    assert_response :forbidden
   end
 
   test "requires authentication" do

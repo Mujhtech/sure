@@ -26,7 +26,7 @@ RSpec.describe 'API V1 Rules', type: :request do
       user: user,
       name: 'API Docs Key',
       key: key,
-      scopes: %w[read],
+      scopes: %w[read_write],
       source: 'web'
     )
   end
@@ -114,6 +114,120 @@ RSpec.describe 'API V1 Rules', type: :request do
         run_test!
       end
     end
+
+    post 'Create a rule' do
+      tags 'Rules'
+      security [ { apiKeyAuth: [] } ]
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :body, in: :body, required: true, schema: {
+        type: :object,
+        required: %w[rule],
+        properties: {
+          rule: {
+            type: :object,
+            required: %w[resource_type actions_attributes],
+            properties: {
+              name: { type: :string, nullable: true },
+              resource_type: { type: :string, enum: %w[transaction] },
+              active: { type: :boolean },
+              effective_date: { type: :string, format: :date, nullable: true },
+              conditions_attributes: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/RuleConditionInput' }
+              },
+              actions_attributes: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/RuleActionInput' }
+              }
+            }
+          }
+        }
+      }
+
+      let(:body) do
+        {
+          rule: {
+            name: 'Mobile coffee cleanup',
+            resource_type: 'transaction',
+            active: true,
+            conditions_attributes: [
+              { condition_type: 'transaction_name', operator: 'like', value: 'coffee' }
+            ],
+            actions_attributes: [
+              { action_type: 'set_transaction_name', value: 'Coffee' }
+            ]
+          }
+        }
+      end
+
+      response '201', 'rule created' do
+        schema '$ref' => '#/components/schemas/RuleResponse'
+
+        run_test!
+      end
+
+      response '422', 'unsupported resource type' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:body) do
+          {
+            rule: {
+              name: 'Bad rule',
+              resource_type: 'account',
+              actions_attributes: [
+                { action_type: 'set_transaction_name', value: 'Coffee' }
+              ]
+            }
+          }
+        end
+
+        run_test!
+      end
+    end
+
+  end
+
+  path '/api/v1/rules/apply_all' do
+    post 'Apply all rules' do
+      tags 'Rules'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      response '202', 'apply all queued' do
+        schema '$ref' => '#/components/schemas/GenericMessageResponse'
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/rules/destroy_all' do
+    delete 'Delete all rules' do
+      tags 'Rules'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      response '200', 'rules deleted' do
+        schema '$ref' => '#/components/schemas/GenericMessageResponse'
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/rules/clear_ai_cache' do
+    post 'Clear AI cache' do
+      tags 'Rules'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      response '202', 'cache clear queued' do
+        schema '$ref' => '#/components/schemas/GenericMessageResponse'
+
+        run_test!
+      end
+    end
   end
 
   path '/api/v1/rules/{id}' do
@@ -152,6 +266,76 @@ RSpec.describe 'API V1 Rules', type: :request do
         schema '$ref' => '#/components/schemas/ErrorResponse'
 
         let(:id) { SecureRandom.uuid }
+
+        run_test!
+      end
+    end
+
+    patch 'Update a rule' do
+      tags 'Rules'
+      security [ { apiKeyAuth: [] } ]
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :body, in: :body, required: true, schema: {
+        type: :object,
+        required: %w[rule],
+        properties: {
+          rule: {
+            type: :object,
+            properties: {
+              name: { type: :string, nullable: true },
+              active: { type: :boolean },
+              effective_date: { type: :string, format: :date, nullable: true },
+              conditions_attributes: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/RuleConditionInput' }
+              },
+              actions_attributes: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/RuleActionInput' }
+              }
+            }
+          }
+        }
+      }
+
+      let(:id) { rule.id }
+      let(:body) { { rule: { name: 'Updated coffee cleanup', active: false } } }
+
+      response '200', 'rule updated' do
+        schema '$ref' => '#/components/schemas/RuleResponse'
+
+        run_test!
+      end
+    end
+
+    delete 'Delete a rule' do
+      tags 'Rules'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      let(:id) { rule.id }
+
+      response '200', 'rule deleted' do
+        schema '$ref' => '#/components/schemas/GenericMessageResponse'
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/rules/{id}/apply' do
+    parameter name: :id, in: :path, type: :string, required: true, description: 'Rule ID'
+
+    post 'Apply a rule' do
+      tags 'Rules'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      let(:id) { rule.id }
+
+      response '202', 'rule apply queued' do
+        schema '$ref' => '#/components/schemas/RuleResponse'
 
         run_test!
       end

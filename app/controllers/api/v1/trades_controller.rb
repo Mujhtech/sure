@@ -4,8 +4,8 @@ class Api::V1::TradesController < Api::V1::BaseController
   include Pagy::Backend
 
   before_action :ensure_read_scope, only: [ :index, :show ]
-  before_action :ensure_write_scope, only: [ :create, :update, :destroy ]
-  before_action :set_trade, only: [ :show, :update, :destroy ]
+  before_action :ensure_write_scope, only: [ :create, :update, :destroy, :unlock ]
+  before_action :set_trade, only: [ :show, :update, :destroy, :unlock ]
 
   def index
     family = current_resource_owner.family
@@ -114,6 +114,15 @@ class Api::V1::TradesController < Api::V1::BaseController
     render json: { message: "Trade deleted successfully" }, status: :ok
   rescue => e
     log_and_render_error("destroy", e)
+  end
+
+  def unlock
+    @entry.unlock_for_sync!
+    @trade = @entry.trade
+
+    render :show
+  rescue => e
+    log_and_render_error("unlock", e)
   end
 
   private
@@ -392,7 +401,7 @@ class Api::V1::TradesController < Api::V1::BaseController
 
     def parse_date!(value, param_name)
       Date.parse(value)
-    rescue Date::Error, ArgumentError, TypeError
+    rescue ArgumentError, TypeError
       raise ArgumentError, "Invalid #{param_name} format"
     end
 

@@ -4,9 +4,9 @@ class Api::V1::RecurringTransactionsController < Api::V1::BaseController
   include Pagy::Backend
 
   before_action :ensure_read_scope, only: %i[index show]
-  before_action :ensure_write_scope, only: %i[create update destroy]
+  before_action :ensure_write_scope, only: %i[create update destroy identify cleanup update_settings toggle_status]
   before_action :set_readable_recurring_transaction, only: :show
-  before_action :set_writable_recurring_transaction, only: %i[update destroy]
+  before_action :set_writable_recurring_transaction, only: %i[update destroy toggle_status]
 
   def index
     return render_invalid_account_filter if params[:account_id].present? && !valid_uuid?(params[:account_id])
@@ -133,6 +133,49 @@ class Api::V1::RecurringTransactionsController < Api::V1::BaseController
       error: "internal_server_error",
       message: "Internal server error"
     }, status: :internal_server_error
+  end
+
+  def identify
+    count = RecurringTransaction.identify_patterns_for!(current_resource_owner.family)
+
+    render json: {
+      message: "Recurring transaction identification completed",
+      identified_count: count
+    }, status: :ok
+  end
+
+  def cleanup
+    count = RecurringTransaction.cleanup_stale_for(current_resource_owner.family)
+
+    render json: {
+      message: "Recurring transaction cleanup completed",
+      cleaned_up_count: count
+    }, status: :ok
+  end
+
+  def update_settings
+    unless params.key?(:recurring_transactions_disabled)
+      render_validation_error("recurring_transactions_disabled is required")
+      return
+    end
+
+    current_resource_owner.family.update!(
+      recurring_transactions_disabled: ActiveModel::Type::Boolean.new.cast(params[:recurring_transactions_disabled])
+    )
+
+    render json: {
+      recurring_transactions_disabled: current_resource_owner.family.recurring_transactions_disabled?
+    }, status: :ok
+  end
+
+  def toggle_status
+    if @recurring_transaction.active?
+      @recurring_transaction.mark_inactive!
+    else
+      @recurring_transaction.mark_active!
+    end
+
+    render :show
   end
 
   private

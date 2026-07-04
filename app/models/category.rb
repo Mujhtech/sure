@@ -1,4 +1,8 @@
 class Category < ApplicationRecord
+  include MobileSyncRecordable
+
+  record_mobile_sync_events_as "category"
+
   has_many :transactions, dependent: :nullify, class_name: "Transaction"
   has_many :import_mappings, as: :mappable, dependent: :destroy, class_name: "Import::Mapping"
 

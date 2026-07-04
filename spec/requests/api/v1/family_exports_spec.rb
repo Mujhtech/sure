@@ -114,6 +114,35 @@ RSpec.describe "Api::V1::FamilyExports", type: :request do
         run_test!
       end
     end
+
+    delete "Deletes a family export" do
+      tags "Family Exports"
+      security [ apiKeyAuth: [] ]
+      produces "application/json"
+
+      response "200", "family export deleted" do
+        schema "$ref" => "#/components/schemas/GenericMessageResponse"
+        run_test!
+      end
+
+      response "401", "unauthorized" do
+        let(:'X-Api-Key') { nil }
+        schema "$ref" => "#/components/schemas/ErrorResponse"
+        run_test!
+      end
+
+      response "403", "forbidden" do
+        let(:user) { users(:family_member) }
+        schema "$ref" => "#/components/schemas/ErrorResponse"
+        run_test!
+      end
+
+      response "404", "not found" do
+        let(:id) { SecureRandom.uuid }
+        schema "$ref" => "#/components/schemas/ErrorResponse"
+        run_test!
+      end
+    end
   end
 
   path "/api/v1/family_exports/{id}/download" do

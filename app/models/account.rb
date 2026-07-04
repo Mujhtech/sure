@@ -1,5 +1,8 @@
 class Account < ApplicationRecord
   include AASM, Syncable, Monetizable, Chartable, Linkable, Enrichable, Anchorable, Reconcileable, TaxTreatable
+  include MobileSyncRecordable
+
+  record_mobile_sync_events_as "account"
 
   before_validation :assign_default_owner, if: -> { owner_id.blank? }
 

@@ -14,6 +14,7 @@ json.status recurring_transaction.status
 json.occurrence_count recurring_transaction.occurrence_count
 json.name recurring_transaction.name
 json.manual recurring_transaction.manual
+json.transfer recurring_transaction.transfer?
 json.expected_amount_min recurring_transaction.expected_amount_min_money&.format
 json.expected_amount_min_cents money_to_minor_units.call(recurring_transaction.expected_amount_min_money)
 json.expected_amount_max recurring_transaction.expected_amount_max_money&.format
@@ -31,6 +32,16 @@ if recurring_transaction.account.present?
   end
 else
   json.account nil
+end
+
+if recurring_transaction.destination_account.present?
+  json.destination_account do
+    json.id recurring_transaction.destination_account.id
+    json.name recurring_transaction.destination_account.name
+    json.account_type recurring_transaction.destination_account.accountable_type&.underscore
+  end
+else
+  json.destination_account nil
 end
 
 if recurring_transaction.merchant.present?

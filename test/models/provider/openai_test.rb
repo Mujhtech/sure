@@ -287,6 +287,112 @@ class Provider::OpenaiTest < ActiveSupport::TestCase
     assert_equal "configured model: custom-model", custom_provider.supported_models_description
   end
 
+  test "custom provider chat uses configured model instead of stale requested model" do
+    custom_provider = Provider::Openai.new(
+      "test-token",
+      uri_base: "https://api.deepseek.com/v1",
+      model: "deepseek-v4-flash"
+    )
+
+    fake_client = mock
+    custom_provider.stubs(:client).returns(fake_client)
+
+    fake_client.expects(:chat).with do |parameters:|
+      assert_equal "deepseek-v4-flash", parameters[:model]
+      assert_equal [ { role: "user", content: "Hello" } ], parameters[:messages]
+      true
+    end.returns({
+      "id" => "chatcmpl-test",
+      "model" => "deepseek-v4-flash",
+      "choices" => [
+        {
+          "message" => {
+            "content" => "Hi there"
+          }
+        }
+      ]
+    })
+
+    response = custom_provider.chat_response("Hello", model: "gpt-4")
+
+    assert response.success?
+    assert_equal "deepseek-v4-flash", response.data.model
+    assert_equal "Hi there", response.data.messages.first.output_text
+  end
+
+  test "generic chat does not stream preamble text from tool call responses" do
+    custom_provider = Provider::Openai.new(
+      "test-token",
+      uri_base: "https://api.deepseek.com/v1",
+      model: "deepseek-v4-flash"
+    )
+
+    fake_client = mock
+    custom_provider.stubs(:client).returns(fake_client)
+
+    fake_client.expects(:chat).returns({
+      "id" => "chatcmpl-tool",
+      "model" => "deepseek-v4-flash",
+      "choices" => [
+        {
+          "message" => {
+            "content" => "Let me check your recent finances.",
+            "tool_calls" => [
+              {
+                "id" => "call_finances",
+                "type" => "function",
+                "function" => {
+                  "name" => "get_accounts",
+                  "arguments" => "{}"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    })
+
+    chunks = []
+    response = custom_provider.chat_response(
+      "Show spending insight",
+      model: "gpt-4",
+      streamer: proc { |chunk| chunks << chunk }
+    )
+
+    assert response.success?
+    assert_equal [ "response" ], chunks.map(&:type)
+    assert_equal [ "get_accounts" ], chunks.first.data.function_requests.map(&:function_name)
+  end
+
+  test "generic chat messages preserve sequential function result rounds" do
+    messages = @subject.send(
+      :build_generic_messages,
+      prompt: "What is my budget status?",
+      function_results: [
+        {
+          call_id: "call_accounts",
+          name: "get_accounts",
+          arguments: "{}",
+          output: { accounts: [ "Checking" ] },
+          tool_round: 1
+        },
+        {
+          call_id: "call_budget",
+          name: "get_budget",
+          arguments: "{}",
+          output: { budgeted: 1000, spent: 750 },
+          tool_round: 2
+        }
+      ]
+    )
+
+    assert_equal %w[user assistant tool assistant tool], messages.map { |message| message[:role] }
+    assert_equal [ "call_accounts" ], messages[1][:tool_calls].map { |tool_call| tool_call[:id] }
+    assert_equal "call_accounts", messages[2][:tool_call_id]
+    assert_equal [ "call_budget" ], messages[3][:tool_calls].map { |tool_call| tool_call[:id] }
+    assert_equal "call_budget", messages[4][:tool_call_id]
+  end
+
   test "upsert_langfuse_trace uses client trace upsert" do
     trace = Struct.new(:id).new("trace_123")
     fake_client = mock

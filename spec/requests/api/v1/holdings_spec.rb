@@ -180,5 +180,143 @@ RSpec.describe 'API V1 Holdings', type: :request do
         run_test!
       end
     end
+
+    patch 'Update holding cost basis' do
+      tags 'Holdings'
+      security [ { apiKeyAuth: [] } ]
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :holding_params, in: :body, schema: {
+        type: :object,
+        required: %w[holding],
+        properties: {
+          holding: {
+            type: :object,
+            required: %w[cost_basis],
+            properties: {
+              cost_basis: { type: :string, description: 'Total cost basis for the position' }
+            }
+          }
+        }
+      }
+
+      response '200', 'holding updated' do
+        schema '$ref' => '#/components/schemas/Holding'
+
+        let(:id) { holding.id }
+        let(:holding_params) { { holding: { cost_basis: '1000.00' } } }
+
+        run_test!
+      end
+
+      response '422', 'invalid cost basis' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:id) { holding.id }
+        let(:holding_params) { { holding: { cost_basis: '-1' } } }
+
+        run_test!
+      end
+    end
+
+    delete 'Delete holding' do
+      tags 'Holdings'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      response '200', 'holding deleted' do
+        schema '$ref' => '#/components/schemas/GenericMessageResponse'
+
+        let(:id) { holding.id }
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/holdings/{id}/unlock_cost_basis' do
+    parameter name: :id, in: :path, type: :string, required: true, description: 'Holding ID'
+
+    post 'Unlock holding cost basis' do
+      tags 'Holdings'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      response '200', 'cost basis unlocked' do
+        schema '$ref' => '#/components/schemas/Holding'
+
+        let(:id) { holding.id }
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/holdings/{id}/remap_security' do
+    parameter name: :id, in: :path, type: :string, required: true, description: 'Holding ID'
+
+    patch 'Remap holding security' do
+      tags 'Holdings'
+      security [ { apiKeyAuth: [] } ]
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :security_params, in: :body, schema: {
+        type: :object,
+        required: %w[security_id],
+        properties: {
+          security_id: { type: :string, description: 'Combobox security id in SYMBOL|EXCHANGE|PROVIDER format' }
+        }
+      }
+
+      response '200', 'security remapped' do
+        schema '$ref' => '#/components/schemas/Holding'
+
+        let(:id) { holding.id }
+        let(:security_params) { { security_id: 'VTI|XNAS' } }
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/holdings/{id}/reset_security' do
+    parameter name: :id, in: :path, type: :string, required: true, description: 'Holding ID'
+
+    post 'Reset holding security to provider security' do
+      tags 'Holdings'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      response '422', 'holding is not remapped' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:id) { holding.id }
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/holdings/{id}/sync_prices' do
+    parameter name: :id, in: :path, type: :string, required: true, description: 'Holding ID'
+
+    post 'Sync holding security prices' do
+      tags 'Holdings'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      response '422', 'provider returned no prices' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        before do
+          allow_any_instance_of(Security).to receive(:import_provider_prices).and_return([ 0, 'No prices available' ])
+          allow_any_instance_of(Security).to receive(:import_provider_details)
+        end
+
+        let(:id) { holding.id }
+
+        run_test!
+      end
+    end
   end
 end

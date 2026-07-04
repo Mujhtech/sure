@@ -65,6 +65,8 @@ class Api::V1::RecurringTransactionsControllerTest < ActionDispatch::Integration
     assert response_data.key?("expected_amount_min_cents")
     assert response_data.key?("expected_amount_max_cents")
     assert response_data.key?("expected_amount_avg_cents")
+    assert_equal false, response_data["transfer"]
+    assert_nil response_data["destination_account"]
     assert_equal @account.id, response_data["account"]["id"]
     assert_equal @merchant.id, response_data["merchant"]["id"]
   end
@@ -328,6 +330,39 @@ class Api::V1::RecurringTransactionsControllerTest < ActionDispatch::Integration
     response_data = JSON.parse(response.body)
     assert_equal "inactive", response_data["status"]
     assert_equal 16, response_data["expected_day_of_month"]
+  end
+
+  test "should toggle recurring transaction status" do
+    patch toggle_status_api_v1_recurring_transaction_url(@recurring_transaction),
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal "inactive", response_data["status"]
+
+    patch toggle_status_api_v1_recurring_transaction_url(@recurring_transaction),
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal "active", response_data["status"]
+  end
+
+  test "should update recurring transaction settings" do
+    patch update_settings_api_v1_recurring_transactions_url,
+          params: { recurring_transactions_disabled: true },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal true, response_data["recurring_transactions_disabled"]
+    assert_equal true, @family.reload.recurring_transactions_disabled?
+  end
+
+  test "should reject recurring transaction settings without flag" do
+    patch update_settings_api_v1_recurring_transactions_url, headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
   end
 
   test "should require authentication when updating recurring transaction" do

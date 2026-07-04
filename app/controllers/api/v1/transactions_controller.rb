@@ -4,9 +4,19 @@ class Api::V1::TransactionsController < Api::V1::BaseController
   include Pagy::Backend
 
   # Ensure proper scope authorization for read vs write access
-  before_action :ensure_read_scope, only: [ :index, :show ]
-  before_action :ensure_write_scope, only: [ :create, :update, :destroy ]
-  before_action :set_transaction, only: [ :show, :update, :destroy ]
+  before_action :ensure_read_scope, only: [ :index, :show, :duplicate_candidates ]
+  before_action :ensure_write_scope, only: [
+    :create, :update, :destroy, :bulk_update, :bulk_delete,
+    :merge_duplicate, :dismiss_duplicate, :mark_as_recurring, :unlock, :convert_to_trade, :update_tags
+  ]
+  before_action :set_transaction, only: [
+    :show, :update, :destroy, :duplicate_candidates,
+    :merge_duplicate, :dismiss_duplicate, :mark_as_recurring, :unlock, :convert_to_trade, :update_tags
+  ]
+  before_action :ensure_transaction_account_writable, only: [
+    :destroy, :merge_duplicate, :dismiss_duplicate, :mark_as_recurring, :unlock, :convert_to_trade
+  ]
+  before_action :ensure_transaction_account_annotatable, only: [ :update, :update_tags ]
 
   def index
     family = current_resource_owner.family
@@ -26,7 +36,9 @@ class Api::V1::TransactionsController < Api::V1::BaseController
     # Include necessary associations for efficient queries
     transactions_query = transactions_query.includes(
       { entry: :account },
+      { entry: { child_entries: :entryable } },
       :category, :merchant, :tags,
+      attachments_attachments: :blob,
       transfer_as_outflow: { inflow_transaction: { entry: :account } },
       transfer_as_inflow: { outflow_transaction: { entry: :account } }
     ).reverse_chronological
@@ -127,7 +139,7 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       error: "internal_server_error",
       message: "An unexpected error occurred"
     }, status: :internal_server_error
-end
+  end
 
   def update
     if @entry.split_child?
@@ -145,7 +157,7 @@ end
         # Handle tags separately - only when explicitly provided in the request
         # This allows clearing tags with tag_ids: [] while preserving tags when not specified
         if tags_provided?
-          @entry.transaction.tag_ids = transaction_params[:tag_ids] || []
+          @entry.transaction.tag_ids = family_scoped_tag_ids(transaction_params[:tag_ids] || [])
           @entry.transaction.save!
           @entry.transaction.lock_attr!(:tag_ids) if @entry.transaction.tags.any?
         end
@@ -198,6 +210,305 @@ end
     }, status: :internal_server_error
   end
 
+  def bulk_update
+    permitted = bulk_update_params
+    entry_ids = normalized_entry_ids(permitted[:entry_ids])
+
+    if entry_ids.empty?
+      render_validation_error("entry_ids is required")
+      return
+    end
+
+    entries = writable_transaction_entries.excluding_split_parents.where(id: entry_ids)
+    matched_count = entries.count
+    updated_count = entries.bulk_update!(permitted, update_tags: bulk_update_tags_provided?)
+
+    render json: {
+      message: "#{updated_count} transactions updated",
+      requested_count: entry_ids.size,
+      matched_count: matched_count,
+      updated_count: updated_count,
+      skipped_count: entry_ids.size - matched_count
+    }, status: :ok
+
+  rescue ActiveRecord::RecordInvalid => e
+    render_validation_error(e.record.errors.full_messages.to_sentence.presence || e.message)
+  rescue ActionController::ParameterMissing => e
+    render_validation_error(e.message)
+  rescue => e
+    Rails.logger.error "TransactionsController#bulk_update error: #{e.message}"
+    Rails.logger.error e.backtrace.join("\n")
+
+    render json: {
+      error: "internal_server_error",
+      message: "An unexpected error occurred"
+    }, status: :internal_server_error
+  end
+
+  def bulk_delete
+    permitted = bulk_delete_params
+    entry_ids = normalized_entry_ids(permitted[:entry_ids])
+
+    if entry_ids.empty?
+      render_validation_error("entry_ids is required")
+      return
+    end
+
+    entries = writable_transaction_entries.where(parent_entry_id: nil)
+    destroyed = entries.destroy_by(id: entry_ids)
+    destroyed.map(&:account).uniq.each(&:sync_later)
+
+    render json: {
+      message: "#{destroyed.count} transactions deleted",
+      requested_count: entry_ids.size,
+      deleted_count: destroyed.count,
+      skipped_count: entry_ids.size - destroyed.count
+    }, status: :ok
+
+  rescue ActionController::ParameterMissing => e
+    render_validation_error(e.message)
+  rescue => e
+    Rails.logger.error "TransactionsController#bulk_delete error: #{e.message}"
+    Rails.logger.error e.backtrace.join("\n")
+
+    render json: {
+      error: "internal_server_error",
+      message: "An unexpected error occurred"
+    }, status: :internal_server_error
+  end
+
+  def duplicate_candidates
+    unless @transaction.pending?
+      render_validation_error("Transaction is not pending")
+      return
+    end
+
+    limit = safe_duplicate_candidates_limit
+    offset = safe_duplicate_candidates_offset
+    candidates = @transaction.pending_duplicate_candidates(limit: limit + 1, offset: offset)
+                             .includes(:account, entryable: [ :category, :merchant ])
+                             .to_a
+    has_more = candidates.size > limit
+
+    render json: {
+      duplicate_candidates: candidates.first(limit).map { |entry| duplicate_candidate_json(entry) },
+      pagination: {
+        limit: limit,
+        offset: offset,
+        has_more: has_more
+      }
+    }, status: :ok
+
+  rescue => e
+    Rails.logger.error "TransactionsController#duplicate_candidates error: #{e.message}"
+    Rails.logger.error e.backtrace.join("\n")
+
+    render json: {
+      error: "internal_server_error",
+      message: "An unexpected error occurred"
+    }, status: :internal_server_error
+  end
+
+  def merge_duplicate
+    posted_entry_id = duplicate_merge_posted_entry_id
+
+    if posted_entry_id.present?
+      posted_entry = find_eligible_posted_duplicate_entry(posted_entry_id)
+
+      unless posted_entry
+        render_validation_error("posted_entry_id is invalid")
+        return
+      end
+
+      store_manual_duplicate_match!(posted_entry)
+    end
+
+    if @transaction.merge_with_duplicate!
+      render json: { message: "Duplicate transaction merged successfully" }, status: :ok
+    else
+      render_validation_error("Transaction does not have a mergeable duplicate suggestion")
+    end
+
+  rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotDestroyed,
+         ActiveRecord::Deadlocked, ActiveRecord::LockWaitTimeout => e
+    Rails.logger.error "TransactionsController#merge_duplicate error: #{e.message}"
+    render_validation_error("Duplicate transaction could not be merged")
+  rescue => e
+    Rails.logger.error "TransactionsController#merge_duplicate error: #{e.message}"
+    Rails.logger.error e.backtrace.join("\n")
+
+    render json: {
+      error: "internal_server_error",
+      message: "An unexpected error occurred"
+    }, status: :internal_server_error
+  end
+
+  def dismiss_duplicate
+    if @transaction.dismiss_duplicate_suggestion!
+      render json: { message: "Duplicate suggestion dismissed successfully" }, status: :ok
+    else
+      render_validation_error("Transaction does not have a duplicate suggestion")
+    end
+
+  rescue ActiveRecord::RecordInvalid => e
+    Rails.logger.error "TransactionsController#dismiss_duplicate error: #{e.message}"
+    render_validation_error("Duplicate suggestion could not be dismissed")
+  rescue => e
+    Rails.logger.error "TransactionsController#dismiss_duplicate error: #{e.message}"
+    Rails.logger.error e.backtrace.join("\n")
+
+    render json: {
+      error: "internal_server_error",
+      message: "An unexpected error occurred"
+    }, status: :internal_server_error
+  end
+
+  def update_tags
+    tag_ids = family_scoped_tag_ids(transaction_tag_ids)
+
+    @transaction.tag_ids = tag_ids
+    @entry.lock_saved_attributes!
+    @entry.mark_user_modified!
+    @transaction.lock_attr!(:tag_ids)
+    @entry.sync_account_later
+    @transaction.reload
+
+    render :show
+  rescue ActionController::ParameterMissing => e
+    render_validation_error(e.message)
+  rescue ActiveRecord::RecordInvalid => e
+    render_validation_error(e.record.errors.full_messages.to_sentence.presence || e.message)
+  rescue => e
+    Rails.logger.error "TransactionsController#update_tags error: #{e.message}"
+    Rails.logger.error e.backtrace.join("\n")
+
+    render json: {
+      error: "internal_server_error",
+      message: "An unexpected error occurred"
+    }, status: :internal_server_error
+  end
+
+  def mark_as_recurring
+    existing = current_resource_owner.family.recurring_transactions.find_by(
+      account_id: @entry.account_id,
+      merchant_id: @transaction.merchant_id,
+      name: @transaction.merchant_id.present? ? nil : @entry.name,
+      currency: @entry.currency,
+      manual: true
+    )
+
+    if existing
+      render json: {
+        error: "conflict",
+        message: "Recurring transaction already exists",
+        recurring_transaction_id: existing.id
+      }, status: :conflict
+      return
+    end
+
+    @recurring_transaction = RecurringTransaction.create_from_transaction(@transaction)
+    render "api/v1/recurring_transactions/show", status: :created
+
+  rescue ActiveRecord::RecordInvalid => e
+    render json: {
+      error: "validation_failed",
+      message: "Recurring transaction could not be created",
+      errors: e.record.errors.full_messages
+    }, status: :unprocessable_entity
+  rescue => e
+    Rails.logger.error "TransactionsController#mark_as_recurring error: #{e.message}"
+    Rails.logger.error e.backtrace.join("\n")
+
+    render json: {
+      error: "internal_server_error",
+      message: "An unexpected error occurred"
+    }, status: :internal_server_error
+  end
+
+  def convert_to_trade
+    unless @entry.account.investment?
+      render_validation_error("Transaction must belong to an investment account")
+      return
+    end
+
+    if @entry.excluded?
+      render_validation_error("Transaction has already been converted or excluded")
+      return
+    end
+
+    security = resolve_conversion_security
+    return if performed?
+
+    qty, price = conversion_qty_and_price
+    return if performed?
+
+    requested_activity_label = trade_conversion_params[:investment_activity_label].presence
+    is_sell = requested_activity_label == "Sell" || (requested_activity_label.blank? && @entry.amount.negative?)
+    activity_label = requested_activity_label || (is_sell ? "Sell" : "Buy")
+    signed_qty = is_sell ? -qty : qty
+    trade_amount = qty * price
+    signed_amount = is_sell ? -trade_amount : trade_amount
+
+    Entry.transaction do
+      new_entry = @entry.account.entries.create!(
+        name: trade_conversion_params[:trade_name].presence || Trade.build_name(is_sell ? "sell" : "buy", qty, security.ticker),
+        date: @entry.date,
+        amount: signed_amount,
+        currency: @entry.currency,
+        notes: conversion_note,
+        entryable: Trade.new(
+          security: security,
+          qty: signed_qty,
+          price: price,
+          currency: @entry.currency,
+          investment_activity_label: activity_label
+        )
+      )
+
+      new_entry.lock_saved_attributes!
+      new_entry.mark_user_modified!
+      @entry.update!(excluded: true)
+
+      @trade = new_entry.trade
+      @entry = new_entry
+    end
+
+    render template: "api/v1/trades/show", status: :created
+  rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotSaved => e
+    record = e.respond_to?(:record) ? e.record : nil
+    render json: {
+      error: "validation_failed",
+      message: "Transaction could not be converted to a trade",
+      errors: record&.errors&.full_messages || [ e.message ]
+    }, status: :unprocessable_entity
+  rescue => e
+    Rails.logger.error "TransactionsController#convert_to_trade error: #{e.message}"
+    Rails.logger.error e.backtrace.join("\n")
+
+    render json: {
+      error: "internal_server_error",
+      message: "An unexpected error occurred"
+    }, status: :internal_server_error
+  end
+
+  def unlock
+    @entry.unlock_for_sync!
+    @transaction.reload
+
+    render :show
+
+  rescue ActiveRecord::RecordInvalid => e
+    render_validation_error(e.record.errors.full_messages.to_sentence.presence || e.message)
+  rescue => e
+    Rails.logger.error "TransactionsController#unlock error: #{e.message}"
+    Rails.logger.error e.backtrace.join("\n")
+
+    render json: {
+      error: "internal_server_error",
+      message: "An unexpected error occurred"
+    }, status: :internal_server_error
+  end
+
   private
 
     def set_transaction
@@ -222,6 +533,32 @@ end
 
     def ensure_write_scope
       authorize_scope!(:write)
+    end
+
+    def ensure_transaction_account_writable
+      return if transaction_account_writable?
+
+      render json: {
+        error: "forbidden",
+        message: "You are not authorized to modify this transaction"
+      }, status: :forbidden
+    end
+
+    def ensure_transaction_account_annotatable
+      return if transaction_account_annotatable?
+
+      render json: {
+        error: "forbidden",
+        message: "You are not authorized to annotate this transaction"
+      }, status: :forbidden
+    end
+
+    def transaction_account_writable?
+      @entry.account.permission_for(current_resource_owner).in?(%i[owner full_control])
+    end
+
+    def transaction_account_annotatable?
+      @entry.account.permission_for(current_resource_owner).in?(%i[owner full_control read_write])
     end
 
     def apply_filters(query)
@@ -303,13 +640,187 @@ end
              "entries.name ILIKE ? OR entries.notes ILIKE ? OR merchants.name ILIKE ?",
              search_term, search_term, search_term
            )
-end
+    end
 
     def transaction_params
       params.require(:transaction).permit(
         :date, :amount, :name, :description, :notes, :currency,
         :category_id, :merchant_id, :nature, tag_ids: []
       )
+    end
+
+    def bulk_update_params
+      params.require(:bulk_update)
+            .permit(:date, :notes, :name, :category_id, :merchant_id, entry_ids: [], tag_ids: [])
+    end
+
+    def bulk_delete_params
+      params.require(:bulk_delete).permit(entry_ids: [])
+    end
+
+    def trade_conversion_params
+      source = params[:trade_conversion].present? ? params.require(:trade_conversion) : params
+      source.permit(
+        :security_id,
+        :ticker,
+        :custom_ticker,
+        :exchange_operating_mic,
+        :qty,
+        :price,
+        :investment_activity_label,
+        :trade_name
+      )
+    end
+
+    def normalized_entry_ids(entry_ids)
+      Array.wrap(entry_ids).filter_map { |entry_id| entry_id.to_s.presence }.uniq
+    end
+
+    def writable_transaction_entries
+      writable_account_ids = current_resource_owner.family.accounts.writable_by(current_resource_owner).select(:id)
+
+      current_resource_owner.family.entries
+                            .where(account_id: writable_account_ids)
+                            .where(entryable_type: "Transaction")
+    end
+
+    def duplicate_merge_posted_entry_id
+      params.dig(:duplicate, :posted_entry_id).presence || params[:posted_entry_id].presence
+    end
+
+    def find_eligible_posted_duplicate_entry(entry_id)
+      return nil unless valid_uuid?(entry_id)
+
+      conditions = Transaction::PENDING_PROVIDERS.map { |provider| "(transactions.extra -> '#{provider}' ->> 'pending')::boolean IS NOT TRUE" }
+
+      @entry.account.entries
+            .joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
+            .where(id: entry_id)
+            .where(currency: @entry.currency)
+            .where.not(id: @entry.id)
+            .where(conditions.join(" AND "))
+            .first
+    end
+
+    def store_manual_duplicate_match!(posted_entry)
+      @transaction.update!(
+        extra: (@transaction.extra || {}).deep_dup.merge(
+          "potential_posted_match" => {
+            "entry_id" => posted_entry.id,
+            "reason" => "manual_match",
+            "posted_amount" => posted_entry.amount.to_s,
+            "confidence" => "high",
+            "detected_at" => Date.current.to_s
+          }
+        )
+      )
+    end
+
+    def duplicate_candidate_json(entry)
+      transaction = entry.transaction
+      amount_cents = amount_cents_for_entry(entry)
+
+      {
+        entry_id: entry.id,
+        transaction_id: transaction.id,
+        date: entry.date,
+        name: entry.name,
+        amount: entry.amount_money.format,
+        amount_cents: amount_cents,
+        signed_amount_cents: entry.classification == "income" ? amount_cents : -amount_cents,
+        currency: entry.currency,
+        account: {
+          id: entry.account.id,
+          name: entry.account.name,
+          account_type: entry.account.accountable_type&.underscore
+        },
+        category: transaction.category && {
+          id: transaction.category.id,
+          name: transaction.category.name,
+          color: transaction.category.color,
+          icon: transaction.category.lucide_icon
+        },
+        merchant: transaction.merchant && {
+          id: transaction.merchant.id,
+          name: transaction.merchant.name
+        }
+      }
+    end
+
+    def amount_cents_for_entry(entry)
+      money = entry.amount_money
+      (money.amount * money.currency.minor_unit_conversion).round(0).to_i.abs
+    end
+
+    def resolve_conversion_security
+      conversion = trade_conversion_params
+
+      security = if conversion[:security_id].present? && conversion[:security_id] != "__custom__"
+        Security.find_by(id: conversion[:security_id])
+      elsif conversion[:ticker].present?
+        parsed = Security.parse_combobox_id(conversion[:ticker])
+        if parsed[:ticker].blank?
+          render_validation_error("ticker is invalid")
+          return
+        end
+
+        Security::Resolver.new(
+          parsed[:ticker].strip,
+          exchange_operating_mic: parsed[:exchange_operating_mic] || conversion[:exchange_operating_mic].presence,
+          country_code: current_resource_owner.family.country,
+          price_provider: parsed[:price_provider]
+        ).resolve
+      elsif conversion[:custom_ticker].present?
+        Security::Resolver.new(
+          conversion[:custom_ticker].strip,
+          exchange_operating_mic: conversion[:exchange_operating_mic].presence,
+          country_code: current_resource_owner.family.country
+        ).resolve
+      end
+
+      unless security
+        render_validation_error("security_id, ticker, or custom_ticker is required")
+        return
+      end
+
+      security
+    end
+
+    def conversion_qty_and_price
+      amount = @entry.amount.abs
+      qty = trade_conversion_params[:qty].present? ? trade_conversion_params[:qty].to_d.abs : nil
+      price = trade_conversion_params[:price].present? ? trade_conversion_params[:price].to_d : nil
+
+      if qty.nil? && price.nil?
+        render_validation_error("qty or price is required")
+        return
+      elsif qty.nil? && price.present? && price.positive?
+        qty = (amount / price).round(6)
+      elsif price.nil? && qty.present? && qty.positive?
+        price = (amount / qty).round(4)
+      end
+
+      if qty.nil? || qty <= 0 || price.nil? || price <= 0
+        render_validation_error("qty and price must be greater than 0")
+        return
+      end
+
+      [ qty, price ]
+    end
+
+    def conversion_note
+      "Converted from transaction #{@entry.name} on #{@entry.date.to_date.iso8601}"
+    end
+
+    def safe_duplicate_candidates_limit
+      limit = params[:limit].to_i
+      return 10 if limit <= 0
+
+      [ limit, 50 ].min
+    end
+
+    def safe_duplicate_candidates_offset
+      [ params[:offset].to_i, 0 ].max
     end
 
     def account_id_param
@@ -339,31 +850,67 @@ end
     end
 
     def entry_params_for_update
+      return annotation_entry_params_for_update unless transaction_account_writable?
+
+      permitted = transaction_params
       entry_params = {
-        name: transaction_params[:name] || transaction_params[:description],
-        date: transaction_params[:date],
-        notes: transaction_params[:notes],
+        name: permitted[:name] || permitted[:description],
+        date: permitted[:date],
+        notes: permitted[:notes],
         entryable_attributes: {
           id: @entry.entryable_id,
-          category_id: transaction_params[:category_id],
-          merchant_id: transaction_params[:merchant_id]
+          category_id: permitted[:category_id],
+          merchant_id: permitted[:merchant_id]
           # Note: tag_ids handled separately in update action to distinguish
           # "not provided" from "explicitly set to empty"
         }.compact_blank
       }
 
       # Only update amount if provided
-      if transaction_params[:amount].present?
+      if permitted[:amount].present?
         entry_params[:amount] = calculate_signed_amount
       end
 
       entry_params.compact
     end
 
+    def annotation_entry_params_for_update
+      permitted = transaction_params
+      entry_params = {}
+      entry_params[:notes] = permitted[:notes] if permitted.key?(:notes)
+
+      entryable_attributes = {}
+      entryable_attributes[:category_id] = permitted[:category_id] if permitted.key?(:category_id)
+      entryable_attributes[:merchant_id] = permitted[:merchant_id] if permitted.key?(:merchant_id)
+
+      if entryable_attributes.any?
+        entryable_attributes[:id] = @entry.entryable_id
+        entry_params[:entryable_attributes] = entryable_attributes
+      end
+
+      entry_params
+    end
+
     # Check if tag_ids was explicitly provided in the request.
     # This distinguishes between "user wants to update tags" vs "user didn't specify tags".
     def tags_provided?
       params[:transaction].key?(:tag_ids)
+    end
+
+    def family_scoped_tag_ids(tag_ids)
+      current_resource_owner.family.tags.where(id: normalized_entry_ids(tag_ids)).pluck(:id)
+    end
+
+    def transaction_tag_ids
+      transaction_params = params.require(:transaction)
+      raise ActionController::ParameterMissing, :tag_ids unless transaction_params.key?(:tag_ids)
+
+      Array.wrap(transaction_params[:tag_ids]).filter_map { |tag_id| tag_id.to_s.presence }.uniq
+    end
+
+    def bulk_update_tags_provided?
+      bulk_update = params[:bulk_update]
+      bulk_update.respond_to?(:key?) && bulk_update.key?(:tag_ids)
     end
 
     def split_financial_fields_changed?

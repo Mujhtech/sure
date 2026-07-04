@@ -286,6 +286,226 @@ class Api::V1::CategoriesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "bad_request", body["error"]
   end
 
+  test "update changes category attributes" do
+    patch api_v1_category_url(@subcategory),
+      params: { category: { name: "Updated Subcategory", icon: "coffee" } },
+      headers: api_headers(read_write_api_key)
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "Updated Subcategory", body["name"]
+    assert_equal "coffee", body["icon"]
+  end
+
+  test "update rejects parent from another family" do
+    other_family_category = families(:empty).categories.create!(
+      name: "External Parent",
+      color: "#FF0000",
+      lucide_icon: "shapes"
+    )
+
+    patch api_v1_category_url(@subcategory),
+      params: { category: { parent_id: other_family_category.id } },
+      headers: api_headers(read_write_api_key)
+
+    assert_response :unprocessable_entity
+  end
+
+  test "destroy deletes a category" do
+    category = @user.family.categories.create!(
+      name: "Disposable",
+      color: "#22c55e",
+      lucide_icon: "shapes"
+    )
+
+    assert_difference("@user.family.categories.count", -1) do
+      delete api_v1_category_url(category), headers: api_headers(read_write_api_key)
+    end
+
+    assert_response :ok
+  end
+
+  test "replace_and_destroy reassigns transactions to replacement category" do
+    replacement = @user.family.categories.create!(
+      name: "Replacement Category",
+      color: "#22c55e",
+      lucide_icon: "shapes"
+    )
+    source = @user.family.categories.create!(
+      name: "Replace Source Category",
+      color: "#f97316",
+      lucide_icon: "utensils"
+    )
+    transaction = transactions(:one)
+    transaction.update!(category: source)
+
+    assert_difference(-> { @user.family.categories.count }, -1) do
+      post "/api/v1/categories/#{source.id}/replace_and_destroy",
+        params: { replacement_category_id: replacement.id },
+        headers: api_headers(read_write_api_key)
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "Category replaced and deleted successfully", body["message"]
+    assert_equal 1, body["reassigned_transactions_count"]
+    assert_equal source.id, body.dig("deleted_category", "id")
+    assert_equal replacement.id, body.dig("replacement_category", "id")
+    assert_equal replacement.id, transaction.reload.category_id
+    assert_not @user.family.categories.exists?(source.id)
+  end
+
+  test "replace_and_destroy can leave transactions uncategorized" do
+    source = @user.family.categories.create!(
+      name: "Uncategorize Source Category",
+      color: "#f97316",
+      lucide_icon: "utensils"
+    )
+    transaction = transactions(:one)
+    transaction.update!(category: source)
+
+    assert_difference(-> { @user.family.categories.count }, -1) do
+      post "/api/v1/categories/#{source.id}/replace_and_destroy",
+        headers: api_headers(read_write_api_key)
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal 1, body["reassigned_transactions_count"]
+    assert_nil body["replacement_category"]
+    assert_nil transaction.reload.category_id
+  end
+
+  test "replace_and_destroy rejects same replacement category" do
+    post "/api/v1/categories/#{@category.id}/replace_and_destroy",
+      params: { replacement_category_id: @category.id },
+      headers: api_headers(read_write_api_key)
+
+    assert_response :unprocessable_entity
+    body = JSON.parse(response.body)
+    assert_equal "validation_failed", body["error"]
+    assert_equal "Replacement category cannot be the same as the category being destroyed", body["message"]
+  end
+
+  test "replace_and_destroy rejects replacement category from another family" do
+    other_category = families(:empty).categories.create!(
+      name: "External Replacement",
+      color: "#FF0000",
+      lucide_icon: "shapes"
+    )
+
+    post "/api/v1/categories/#{@category.id}/replace_and_destroy",
+      params: { replacement_category_id: other_category.id },
+      headers: api_headers(read_write_api_key)
+
+    assert_response :unprocessable_entity
+    body = JSON.parse(response.body)
+    assert_equal "validation_failed", body["error"]
+    assert_equal "Replacement category not found", body["message"]
+  end
+
+  test "replace_and_destroy rejects api key without read_write scope" do
+    post "/api/v1/categories/#{@category.id}/replace_and_destroy",
+      params: { replacement_category_id: @subcategory.id },
+      headers: api_headers(read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "bootstrap creates default categories" do
+    empty_user = users(:empty)
+    empty_user.api_keys.active.destroy_all
+    key = ApiKey.create!(
+      user: empty_user,
+      name: "Empty Family RW Key",
+      key: ApiKey.generate_secure_key,
+      scopes: %w[read_write],
+      source: "web"
+    )
+
+    before_count = empty_user.family.categories.count
+    post bootstrap_api_v1_categories_url, headers: api_headers(key)
+    assert_response :success
+    assert_operator empty_user.family.categories.count, :>, before_count
+  end
+
+  test "destroy_all deletes all family categories" do
+    assert_operator @user.family.categories.count, :>, 0
+
+    delete destroy_all_api_v1_categories_url, headers: api_headers(read_write_api_key)
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "Categories deleted successfully", body["message"]
+    assert_equal 0, body["categories_count"]
+    assert_equal 0, @user.family.categories.count
+  end
+
+  test "destroy_all rejects api key without read_write scope" do
+    delete destroy_all_api_v1_categories_url, headers: api_headers(read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "merge reassigns transactions and deletes source categories" do
+    target = @user.family.categories.create!(
+      name: "Target Category",
+      color: "#22c55e",
+      lucide_icon: "shapes"
+    )
+    source = @user.family.categories.create!(
+      name: "Source Category",
+      color: "#f97316",
+      lucide_icon: "utensils"
+    )
+    transaction = transactions(:one)
+    transaction.update!(category: source)
+
+    assert_difference(-> { @user.family.categories.count }, -1) do
+      post merge_api_v1_categories_url,
+        params: { target_id: target.id, source_ids: [ source.id ] },
+        headers: api_headers(read_write_api_key)
+    end
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "Categories merged successfully", body["message"]
+    assert_equal 1, body["merged_count"]
+    assert_equal target.id, body.dig("category", "id")
+    assert_equal target.id, transaction.reload.category_id
+    assert_not @user.family.categories.exists?(source.id)
+  end
+
+  test "merge rejects target selected as source" do
+    post merge_api_v1_categories_url,
+      params: { target_id: @category.id, source_ids: [ @category.id ] },
+      headers: api_headers(read_write_api_key)
+
+    assert_response :unprocessable_entity
+    body = JSON.parse(response.body)
+    assert_equal "validation_failed", body["error"]
+    assert_equal "Target category cannot also be a source category", body["message"]
+  end
+
+  test "merge rejects missing source categories" do
+    post merge_api_v1_categories_url,
+      params: { target_id: @category.id, source_ids: [ SecureRandom.uuid ] },
+      headers: api_headers(read_write_api_key)
+
+    assert_response :unprocessable_entity
+    body = JSON.parse(response.body)
+    assert_equal "validation_failed", body["error"]
+    assert_equal "One or more source categories were not found", body["message"]
+  end
+
+  test "merge rejects api key without read_write scope" do
+    post merge_api_v1_categories_url,
+      params: { target_id: @category.id, source_ids: [ @subcategory.id ] },
+      headers: api_headers(read_only_api_key)
+
+    assert_response :forbidden
+  end
+
   private
 
     def read_write_api_key

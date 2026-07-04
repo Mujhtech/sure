@@ -12,6 +12,13 @@ class LlmUsageTest < ActiveSupport::TestCase
     assert_equal "openai", LlmUsage.infer_provider("gpt-5")
   end
 
+  test "infer_provider returns deepseek for DeepSeek models" do
+    assert_equal "deepseek", LlmUsage.infer_provider("deepseek-v4-flash")
+    assert_equal "deepseek", LlmUsage.infer_provider("deepseek-v4-pro")
+    assert_equal "deepseek", LlmUsage.infer_provider("deepseek-chat")
+    assert_equal "deepseek", LlmUsage.infer_provider("deepseek-reasoner")
+  end
+
   test "infer_provider attributes Bedrock and Vertex prefixed IDs to anthropic" do
     assert_equal "anthropic", LlmUsage.infer_provider("anthropic.claude-sonnet-4-5-20250929-v1:0")
     assert_equal "anthropic", LlmUsage.infer_provider("anthropic.claude-opus-4-20250514-v1:0")
@@ -47,6 +54,45 @@ class LlmUsageTest < ActiveSupport::TestCase
 
     # $1 in + $5 out = $6.00
     assert_in_delta 6.0, cost, 0.0001
+  end
+
+  test "calculate_cost returns DeepSeek V4 Flash pricing" do
+    cost = LlmUsage.calculate_cost(model: "deepseek-v4-flash", prompt_tokens: 1_000_000, completion_tokens: 1_000_000)
+
+    # $0.14 in + $0.28 out = $0.42
+    assert_in_delta 0.42, cost, 0.0001
+  end
+
+  test "calculate_cost returns DeepSeek V4 Pro pricing" do
+    cost = LlmUsage.calculate_cost(model: "deepseek-v4-pro", prompt_tokens: 1_000_000, completion_tokens: 1_000_000)
+
+    # $0.435 in + $0.87 out = $1.305
+    assert_in_delta 1.305, cost, 0.0001
+  end
+
+  test "calculate_cost uses DeepSeek cache hit and miss token rates" do
+    cost = LlmUsage.calculate_cost(
+      model: "deepseek-v4-flash",
+      prompt_tokens: 1_000_000,
+      completion_tokens: 1_000_000,
+      prompt_cache_hit_tokens: 600_000,
+      prompt_cache_miss_tokens: 400_000
+    )
+
+    # 400K miss * $0.14/MTok + 600K hit * $0.0028/MTok + 1M out * $0.28/MTok
+    assert_in_delta 0.33768, cost, 0.0001
+  end
+
+  test "calculate_cost infers DeepSeek cache misses when only cache hits are reported" do
+    cost = LlmUsage.calculate_cost(
+      model: "deepseek-v4-flash",
+      prompt_tokens: 1_000_000,
+      completion_tokens: 0,
+      prompt_cache_hit_tokens: 250_000
+    )
+
+    # 750K miss * $0.14/MTok + 250K hit * $0.0028/MTok
+    assert_in_delta 0.1057, cost, 0.0001
   end
 
   test "calculate_cost prices Anthropic cache tokens relative to the input rate" do

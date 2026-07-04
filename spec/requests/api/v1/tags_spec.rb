@@ -210,4 +210,76 @@ RSpec.describe 'API V1 Tags', type: :request do
       end
     end
   end
+
+  path '/api/v1/tags/{id}/replace_and_destroy' do
+    parameter name: :id, in: :path, type: :string, required: true, description: 'Source tag ID to delete after replacement'
+
+    post 'Replace and delete a tag' do
+      tags 'Tags'
+      security [ { apiKeyAuth: [] } ]
+      consumes 'application/json'
+      produces 'application/json'
+      description 'Moves all taggings from the source tag to replacement_tag_id, then deletes the source tag.'
+      parameter name: :body, in: :body, required: true, schema: {
+        '$ref' => '#/components/schemas/TagReplaceAndDestroyRequest'
+      }
+
+      let(:id) { discretionary_tag.id }
+      let(:body) do
+        {
+          replacement_tag_id: essential_tag.id
+        }
+      end
+
+      response '200', 'tag replaced and deleted' do
+        schema '$ref' => '#/components/schemas/TagReplaceAndDestroyResponse'
+
+        run_test!
+      end
+
+      response '422', 'invalid replacement tag' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:body) do
+          {
+            replacement_tag_id: id
+          }
+        end
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/tags/destroy_all' do
+    delete 'Delete all tags' do
+      tags 'Tags'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      response '200', 'tags deleted' do
+        schema '$ref' => '#/components/schemas/TagDestroyAllResponse'
+
+        run_test!
+      end
+
+      response '403', 'forbidden - api key missing read_write scope' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:read_only_api_key) do
+          key = ApiKey.generate_secure_key
+          ApiKey.create!(
+            user: user,
+            name: 'API Docs Read Key',
+            key: key,
+            scopes: %w[read],
+            source: 'mobile'
+          )
+        end
+        let(:'X-Api-Key') { read_only_api_key.plain_key }
+
+        run_test!
+      end
+    end
+  end
 end

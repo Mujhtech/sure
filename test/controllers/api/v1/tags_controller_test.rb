@@ -250,6 +250,87 @@ class Api::V1::TagsControllerTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
+  test "replace_and_destroy moves taggings to replacement tag" do
+    source_tag = @user.family.tags.create!(name: "Source Tag #{SecureRandom.hex(4)}", color: "#c44fe9")
+    replacement_tag = @user.family.tags.create!(name: "Replacement Tag #{SecureRandom.hex(4)}", color: "#4da568")
+    transaction = @user.family.transactions.first
+    source_tag.taggings.create!(taggable: transaction)
+
+    assert_difference -> { @user.family.tags.count }, -1 do
+      post "/api/v1/tags/#{source_tag.id}/replace_and_destroy",
+           params: { replacement_tag_id: replacement_tag.id },
+           headers: read_write_headers
+    end
+
+    assert_response :success
+
+    body = JSON.parse(response.body)
+    assert_equal "Tag replaced and deleted successfully", body["message"]
+    assert_equal 1, body["replaced_taggings_count"]
+    assert_equal source_tag.id, body.dig("deleted_tag", "id")
+    assert_equal replacement_tag.id, body.dig("replacement_tag", "id")
+    assert_not @user.family.tags.exists?(source_tag.id)
+    assert_equal [ replacement_tag.id ], transaction.reload.tags.where(id: replacement_tag.id).pluck(:id)
+  end
+
+  test "replace_and_destroy requires read_write scope" do
+    replacement_tag = @user.family.tags.create!(name: "Replacement Tag #{SecureRandom.hex(4)}", color: "#4da568")
+
+    post "/api/v1/tags/#{@tag.id}/replace_and_destroy",
+         params: { replacement_tag_id: replacement_tag.id },
+         headers: read_headers
+
+    assert_response :forbidden
+    assert @user.family.tags.exists?(@tag.id)
+  end
+
+  test "replace_and_destroy rejects same replacement tag" do
+    post "/api/v1/tags/#{@tag.id}/replace_and_destroy",
+         params: { replacement_tag_id: @tag.id },
+         headers: read_write_headers
+
+    assert_response :unprocessable_entity
+    assert @user.family.tags.exists?(@tag.id)
+  end
+
+  test "replace_and_destroy rejects replacement tag from another family" do
+    other_tag = @other_family_user.family.tags.create!(name: "Other Replacement", color: "#3b82f6")
+
+    post "/api/v1/tags/#{@tag.id}/replace_and_destroy",
+         params: { replacement_tag_id: other_tag.id },
+         headers: read_write_headers
+
+    assert_response :unprocessable_entity
+    assert @user.family.tags.exists?(@tag.id)
+  end
+
+  test "destroy_all requires authentication" do
+    delete destroy_all_api_v1_tags_url
+
+    assert_response :unauthorized
+  end
+
+  test "destroy_all requires read_write scope" do
+    delete destroy_all_api_v1_tags_url, headers: read_headers
+
+    assert_response :forbidden
+  end
+
+  test "destroy_all deletes all family tags" do
+    @user.family.tags.create!(name: "Delete All One #{SecureRandom.hex(4)}", color: "#c44fe9")
+    @user.family.tags.create!(name: "Delete All Two #{SecureRandom.hex(4)}", color: "#db5a54")
+    other_tag = @other_family_user.family.tags.create!(name: "Other Tag", color: "#3b82f6")
+
+    delete destroy_all_api_v1_tags_url, headers: read_write_headers
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "Tags deleted successfully", body["message"]
+    assert_equal 0, body["tags_count"]
+    assert_equal 0, @user.family.tags.count
+    assert @other_family_user.family.tags.exists?(other_tag.id)
+  end
+
   private
 
     def read_headers

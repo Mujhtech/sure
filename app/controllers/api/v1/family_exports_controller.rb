@@ -4,9 +4,9 @@ class Api::V1::FamilyExportsController < Api::V1::BaseController
   include Pagy::Backend
 
   before_action :ensure_read_scope, only: [ :index, :show, :download ]
-  before_action :ensure_write_scope, only: [ :create ]
+  before_action :ensure_write_scope, only: [ :create, :destroy ]
   before_action :ensure_admin
-  before_action :set_family_export, only: [ :show, :download ]
+  before_action :set_family_export, only: [ :show, :download, :destroy ]
 
   def index
     family_exports_query = current_resource_owner.family
@@ -71,6 +71,22 @@ class Api::V1::FamilyExportsController < Api::V1::BaseController
     redirect_to rails_blob_url(@family_export.export_file, disposition: "attachment"), allow_other_host: true
   rescue StandardError => e
     Rails.logger.error "FamilyExportsController#download error: #{e.message}"
+    Rails.logger.error e.backtrace.join("\n")
+
+    render json: {
+      error: "internal_server_error",
+      message: "An unexpected error occurred"
+    }, status: :internal_server_error
+  end
+
+  def destroy
+    @family_export.destroy!
+
+    render json: {
+      message: "Family export deleted successfully"
+    }, status: :ok
+  rescue StandardError => e
+    Rails.logger.error "FamilyExportsController#destroy error: #{e.message}"
     Rails.logger.error e.backtrace.join("\n")
 
     render json: {

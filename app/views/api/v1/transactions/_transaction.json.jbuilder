@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 json.id transaction.id
+json.entry_id transaction.entry.id
 json.date transaction.entry.date
 json.amount transaction.entry.amount_money.format
 
@@ -20,6 +21,27 @@ json.notes transaction.entry.notes
 json.external_id transaction.entry.external_id
 json.source transaction.entry.source
 json.classification transaction.entry.classification
+json.pending transaction.pending?
+json.protection do
+  json.protected transaction.entry.protected_from_sync?
+  json.reason transaction.entry.protection_reason
+  json.locked_fields transaction.entry.locked_field_names
+  json.user_modified transaction.entry.user_modified?
+  json.import_locked transaction.entry.import_locked?
+end
+
+if transaction.has_potential_duplicate?
+  duplicate_entry = transaction.potential_duplicate_entry
+  json.duplicate_suggestion do
+    json.posted_entry_id duplicate_entry&.id
+    json.posted_transaction_id duplicate_entry&.entryable_id
+    json.reason transaction.potential_duplicate_reason
+    json.confidence transaction.potential_duplicate_confidence
+    json.posted_amount transaction.potential_duplicate_posted_amount&.to_s
+  end
+else
+  json.duplicate_suggestion nil
+end
 
 # Account information
 json.account do
@@ -57,6 +79,10 @@ json.tags transaction.tags do |tag|
   json.color tag.color
 end
 
+json.attachments transaction.attachments do |attachment|
+  json.partial! "api/v1/transaction_attachments/attachment", transaction: transaction, attachment: attachment
+end
+
 # Transfer information (if this transaction is part of a transfer)
 transfer = transaction.transfer
 if transfer.present?
@@ -86,6 +112,55 @@ if transfer.present?
   end
 else
   json.transfer nil
+end
+
+entry = transaction.entry
+json.split do
+  json.parent entry.split_parent?
+  json.child entry.split_child?
+  json.splittable transaction.splittable?
+
+  if entry.split_child?
+    parent_entry = entry.parent_entry
+    json.parent_entry_id parent_entry.id
+    json.parent_transaction_id parent_entry.entryable_id
+  else
+    json.parent_entry_id nil
+    json.parent_transaction_id nil
+  end
+
+  if entry.split_parent?
+    children = entry.child_entries.includes(entryable: [ :category, :merchant ]).order(:created_at, :id)
+    json.lines children do |child|
+      child_transaction = child.entryable
+      child_money = child.amount_money
+      child_conversion_factor = child_money.currency.minor_unit_conversion
+      child_amount_cents = (child_money.amount * child_conversion_factor).round(0).to_i.abs
+
+      json.entry_id child.id
+      json.transaction_id child_transaction.id
+      json.name child.name
+      json.date child.date
+      json.amount child_money.format
+      json.amount_cents child_amount_cents
+      json.signed_amount_cents(child.classification == "income" ? child_amount_cents : -child_amount_cents)
+      json.currency child.currency
+      json.excluded child.excluded?
+
+      if child_transaction.category.present?
+        json.category do
+          json.id child_transaction.category.id
+          json.name child_transaction.category.name
+          json.color child_transaction.category.color
+          json.icon child_transaction.category.lucide_icon
+        end
+      else
+        json.category nil
+      end
+    end
+  else
+    json.lines []
+  end
 end
 
 # Additional metadata

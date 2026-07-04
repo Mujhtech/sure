@@ -2,16 +2,21 @@ module Api
   module V1
     class AuthController < BaseController
       include Invitable
+      include WebauthnRelyingParty
+
+      WEBAUTHN_AUTHENTICATION_CHALLENGE_EXPIRES_IN = 5.minutes
 
       skip_before_action :authenticate_request!
       skip_before_action :check_api_key_rate_limit
       skip_before_action :log_api_access
-      before_action :authenticate_request!, only: :enable_ai
-      before_action :ensure_write_scope, only: :enable_ai
-      before_action :check_api_key_rate_limit, only: :enable_ai
-      before_action :log_api_access, only: :enable_ai
+      before_action :authenticate_request!, only: %i[enable_ai resend_email_confirmation]
+      before_action :ensure_write_scope, only: %i[enable_ai resend_email_confirmation]
+      before_action :check_api_key_rate_limit, only: %i[enable_ai resend_email_confirmation]
+      before_action :log_api_access, only: %i[enable_ai resend_email_confirmation]
 
       def signup
+        return unless load_invitation_from_params
+
         # Check if invite code is required
         if invite_code_required? && params[:invite_code].blank?
           render json: { error: "Invite code is required" }, status: :forbidden
@@ -39,11 +44,22 @@ module Api
 
         user = User.new(user_signup_params)
 
-        # Create family for new user
-        # First user of an instance becomes super_admin
-        family = Family.new
-        user.family = family
-        user.role = User.role_for_new_family_creator
+        if @invitation.present?
+          unless invitation_email_matches?(user)
+            render_invitation_acceptance_error(@invitation, user)
+            return
+          end
+
+          user.family = @invitation.family
+          user.role = @invitation.role
+          user.email = @invitation.email
+        else
+          # Create family for new user
+          # First user of an instance becomes super_admin
+          family = Family.new
+          user.family = family
+          user.role = User.role_for_new_family_creator
+        end
 
         # Atomic: user creation, invite-code claim, and device/token issuance
         # either all commit or none do. Without this, a post-commit device
@@ -56,7 +72,14 @@ module Api
               render json: { errors: user.errors.full_messages }, status: :unprocessable_entity
               raise ActiveRecord::Rollback
             end
-            InviteCode.claim!(params[:invite_code]) if params[:invite_code].present?
+            if @invitation.present?
+              unless @invitation.accept_for(user)
+                render_invitation_acceptance_error(@invitation, user)
+                raise ActiveRecord::Rollback
+              end
+            elsif params[:invite_code].present?
+              InviteCode.claim!(params[:invite_code])
+            end
             device = MobileDevice.upsert_device!(user, device_params)
             token_response = device.issue_token!
           end
@@ -90,20 +113,137 @@ module Api
             return
           end
 
+          if invitation_token_param.present?
+            return unless load_invitation_from_params
+
+            unless invitation_email_matches?(user)
+              render_invitation_acceptance_error(@invitation, user)
+              return
+            end
+          end
+
           # Create device and OAuth token
+          token_response = nil
           begin
-            device = MobileDevice.upsert_device!(user, device_params)
-            token_response = device.issue_token!
+            ActiveRecord::Base.transaction do
+              if @invitation.present?
+                unless @invitation.accept_for(user)
+                  render_invitation_acceptance_error(@invitation, user)
+                  raise ActiveRecord::Rollback
+                end
+              end
+
+              device = MobileDevice.upsert_device!(user, device_params)
+              token_response = device.issue_token!
+            end
           rescue ActiveRecord::RecordInvalid => e
             Rails.logger.error("[Auth] Device registration failed: #{e.message}")
             render json: { error: "Failed to register device" }, status: :unprocessable_entity
             return
           end
 
-          render json: token_response.merge(user: mobile_user_payload(user))
+          render json: token_response.merge(user: mobile_user_payload(user)) if token_response
         else
           render json: { error: "Invalid email or password" }, status: :unauthorized
         end
+      end
+
+      def webauthn_options
+        user = User.find_by(email: params[:email])
+
+        unless user&.authenticate(params[:password])
+          render json: { error: "Invalid email or password" }, status: :unauthorized
+          return
+        end
+
+        unless user.otp_required?
+          render json: { error: "mfa_not_required", message: "MFA is not enabled for this account" }, status: :unprocessable_entity
+          return
+        end
+
+        unless user.webauthn_enabled?
+          render json: { error: "webauthn_unavailable", message: "No WebAuthn credentials are available for this account" }, status: :unprocessable_entity
+          return
+        end
+
+        options = webauthn_relying_party.options_for_authentication(
+          allow: user.webauthn_credentials.pluck(:credential_id),
+          user_verification: "preferred"
+        )
+        challenge_id = SecureRandom.uuid
+        Rails.cache.write(
+          webauthn_authentication_challenge_cache_key(user, challenge_id),
+          options.challenge,
+          expires_in: WEBAUTHN_AUTHENTICATION_CHALLENGE_EXPIRES_IN
+        )
+
+        render json: {
+          challenge_id: challenge_id,
+          expires_in_seconds: WEBAUTHN_AUTHENTICATION_CHALLENGE_EXPIRES_IN.to_i,
+          public_key: options
+        }
+      end
+
+      def webauthn_verify
+        user = User.find_by(email: params[:email])
+
+        unless user&.authenticate(params[:password])
+          render json: { error: "Invalid email or password" }, status: :unauthorized
+          return
+        end
+
+        unless user.otp_required? && user.webauthn_enabled?
+          render json: { error: "webauthn_unavailable", message: "WebAuthn MFA is not available for this account" }, status: :unprocessable_entity
+          return
+        end
+
+        challenge_id = params[:challenge_id].to_s
+        challenge = challenge_id.present? ? Rails.cache.read(webauthn_authentication_challenge_cache_key(user, challenge_id)) : nil
+
+        unless challenge.present?
+          render json: { error: "webauthn_challenge_expired", message: "WebAuthn authentication challenge is missing or expired" }, status: :unprocessable_entity
+          return
+        end
+
+        Rails.cache.delete(webauthn_authentication_challenge_cache_key(user, challenge_id))
+        verify_webauthn_assertion!(user, challenge)
+
+        unless valid_device_info?
+          render json: { error: "Device information is required" }, status: :bad_request
+          return
+        end
+
+        if invitation_token_param.present?
+          return unless load_invitation_from_params
+
+          unless invitation_email_matches?(user)
+            render_invitation_acceptance_error(@invitation, user)
+            return
+          end
+        end
+
+        token_response = nil
+        begin
+          ActiveRecord::Base.transaction do
+            if @invitation.present?
+              unless @invitation.accept_for(user)
+                render_invitation_acceptance_error(@invitation, user)
+                raise ActiveRecord::Rollback
+              end
+            end
+
+            device = MobileDevice.upsert_device!(user, device_params)
+            token_response = device.issue_token!
+          end
+        rescue ActiveRecord::RecordInvalid => e
+          Rails.logger.error("[Auth] Device registration failed: #{e.message}")
+          render json: { error: "Failed to register device" }, status: :unprocessable_entity
+          return
+        end
+
+        render json: token_response.merge(user: mobile_user_payload(user)) if token_response
+      rescue WebAuthn::Error, ActionController::BadRequest, ActionController::ParameterMissing
+        render json: { error: "webauthn_authentication_failed", message: "WebAuthn credential could not be verified" }, status: :unprocessable_entity
       end
 
       def sso_exchange
@@ -247,6 +387,87 @@ module Api
         end
       end
 
+      def request_password_reset
+        unless AuthConfig.password_features_enabled?
+          render json: {
+            error: "password_reset_disabled",
+            message: "Password reset is disabled. Please reset your password through your identity provider."
+          }, status: :forbidden
+          return
+        end
+
+        user = User.find_by(email: params[:email].to_s.strip.downcase)
+
+        if user&.has_local_password? && !user.sso_only?
+          PasswordMailer.with(
+            user: user,
+            token: user.generate_token_for(:password_reset)
+          ).password_reset.deliver_later
+        end
+
+        render json: {
+          message: "If an account exists, password reset instructions will be sent."
+        }, status: :accepted
+      end
+
+      def reset_password
+        unless AuthConfig.password_features_enabled?
+          render json: {
+            error: "password_reset_disabled",
+            message: "Password reset is disabled. Please reset your password through your identity provider."
+          }, status: :forbidden
+          return
+        end
+
+        user = User.find_by_token_for(:password_reset, params[:token])
+        unless user
+          render json: { error: "invalid_token", message: "Password reset token is invalid or expired" }, status: :unprocessable_entity
+          return
+        end
+
+        if user.sso_only?
+          render json: {
+            error: "sso_only_user",
+            message: "This account uses SSO for authentication. Please manage credentials through your identity provider."
+          }, status: :unprocessable_entity
+          return
+        end
+
+        if user.update(password_reset_params)
+          render json: { message: "Password has been reset" }
+        else
+          render json: {
+            error: "validation_failed",
+            message: "Password could not be reset",
+            errors: user.errors.full_messages
+          }, status: :unprocessable_entity
+        end
+      end
+
+      def confirm_email
+        user = User.find_by_token_for(:email_confirmation, params[:token])
+
+        if user&.unconfirmed_email && user.update(email: user.unconfirmed_email, unconfirmed_email: nil)
+          render json: {
+            message: "Email confirmed",
+            user: mobile_user_payload(user)
+          }
+        else
+          render json: { error: "invalid_token", message: "Email confirmation token is invalid or expired" }, status: :unprocessable_entity
+        end
+      end
+
+      def resend_email_confirmation
+        if current_resource_owner.resend_confirmation_email
+          render json: { message: "Confirmation email sent" }, status: :accepted
+        else
+          render json: {
+            error: "no_pending_email_change",
+            message: "There is no pending email change to confirm"
+          }, status: :unprocessable_entity
+        end
+      end
+
       def refresh
         # Find the refresh token
         refresh_token = params[:refresh_token]
@@ -295,6 +516,10 @@ module Api
 
         def user_signup_params
           params.require(:user).permit(:email, :password, :first_name, :last_name)
+        end
+
+        def password_reset_params
+          params.require(:user).permit(:password, :password_confirmation)
         end
 
         def validate_password(password)
@@ -349,8 +574,39 @@ module Api
             first_name: user.first_name,
             last_name: user.last_name,
             ui_layout: user.ui_layout,
-            ai_enabled: user.ai_enabled?
+            ai_enabled: user.ai_enabled?,
+            theme: user.theme,
+            onboarded_at: user.onboarded_at&.iso8601,
+            set_onboarding_preferences_at: user.set_onboarding_preferences_at&.iso8601,
+            set_onboarding_goals_at: user.set_onboarding_goals_at&.iso8601
           }
+        end
+
+        def webauthn_authentication_challenge_cache_key(user, challenge_id)
+          "api:v1:webauthn_authentication:#{user.id}:#{challenge_id}"
+        end
+
+        def verify_webauthn_assertion!(user, challenge)
+          credential = WebAuthn::Credential.from_get(
+            webauthn_credential_payload,
+            relying_party: webauthn_relying_party
+          )
+          stored_credential = user.webauthn_credentials.find_by(credential_id: credential.id)
+          raise WebAuthn::Error, "Credential not registered for user" unless stored_credential
+
+          stored_credential.with_lock do
+            credential.verify(
+              challenge,
+              public_key: stored_credential.public_key,
+              sign_count: stored_credential.sign_count,
+              user_presence: true
+            )
+
+            stored_credential.update!(
+              sign_count: credential.sign_count,
+              last_used_at: Time.current
+            )
+          end
         end
 
         def build_omniauth_hash(cached)
@@ -398,6 +654,47 @@ module Api
 
         def ensure_write_scope
           authorize_scope!(:write)
+        end
+
+        def invitation_token_param
+          params[:invitation_token].presence ||
+            params[:invitation].presence ||
+            params.dig(:user, :invitation_token).presence ||
+            params.dig(:user, :invitation).presence
+        end
+
+        def load_invitation_from_params
+          token = invitation_token_param
+          return true if token.blank?
+
+          @invitation = Invitation.pending.find_by(token: token.to_s)
+          return true if @invitation.present?
+
+          render json: {
+            error: "not_found",
+            message: "Invitation not found"
+          }, status: :not_found
+          false
+        end
+
+        def invitation_email_matches?(user)
+          @invitation.email.to_s.strip.downcase == user.email.to_s.strip.downcase
+        end
+
+        def render_invitation_acceptance_error(invitation, user)
+          message = if user.blank? || invitation.email.to_s.strip.downcase != user.email.to_s.strip.downcase
+            "Invitation email does not match the user"
+          elsif invitation.would_orphan_owned_accounts?(user)
+            "Existing user owns data in another family and cannot be moved"
+          else
+            "Invitation could not be accepted"
+          end
+
+          render json: {
+            error: "validation_failed",
+            message: message,
+            errors: [ message ]
+          }, status: :unprocessable_entity
         end
     end
   end

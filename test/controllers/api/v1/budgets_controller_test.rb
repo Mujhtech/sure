@@ -15,6 +15,13 @@ class Api::V1::BudgetsControllerTest < ActionDispatch::IntegrationTest
       source: "web",
       display_key: "test_read_#{SecureRandom.hex(8)}"
     )
+    @read_write_api_key = ApiKey.create!(
+      user: @user,
+      name: "Test Read Write Key",
+      scopes: [ "read_write" ],
+      source: "mobile",
+      display_key: "test_rw_#{SecureRandom.hex(8)}"
+    )
 
     @budget = @family.budgets.create!(
       start_date: 3.months.ago.beginning_of_month.to_date,
@@ -106,6 +113,47 @@ class Api::V1::BudgetsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     response_data = JSON.parse(response.body)
     assert_includes response_data["budgets"].map { |budget| budget["id"] }, @budget.id
+  end
+
+  test "updates a budget" do
+    patch api_v1_budget_url(@budget),
+          params: { budget: { budgeted_spending: 3500, expected_income: 5500 } },
+          headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal 350000, response_data["budgeted_spending_cents"]
+    assert_equal 550000, response_data["expected_income_cents"]
+  end
+
+  test "copies previous initialized budget" do
+    source_budget = @family.budgets.create!(
+      start_date: Date.new(2035, 1, 1),
+      end_date: Date.new(2035, 1, 31),
+      budgeted_spending: 4200,
+      expected_income: 6200,
+      currency: "USD"
+    )
+    target_budget = @family.budgets.create!(
+      start_date: Date.new(2035, 2, 1),
+      end_date: Date.new(2035, 2, 28),
+      currency: "USD"
+    )
+
+    post copy_previous_api_v1_budget_url(target_budget), headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal (source_budget.budgeted_spending * 100).to_i, response_data["budgeted_spending_cents"]
+    assert_equal (source_budget.expected_income * 100).to_i, response_data["expected_income_cents"]
+  end
+
+  test "rejects budget update with read-only key" do
+    patch api_v1_budget_url(@budget),
+          params: { budget: { budgeted_spending: 3500 } },
+          headers: api_headers(@api_key)
+
+    assert_response :forbidden
   end
 
   test "rejects invalid date filters" do

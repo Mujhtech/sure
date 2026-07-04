@@ -214,6 +214,67 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     assert_response :created
   end
 
+  test "should signup with invitation token and join invited family" do
+    inviter = users(:family_admin)
+    family = inviter.family
+    invitation = family.invitations.create!(
+      email: "mobile-invited-new-user@example.com",
+      role: "member",
+      inviter: inviter
+    )
+
+    assert_difference("User.count", 1) do
+      assert_no_difference("Family.count") do
+        assert_difference("MobileDevice.count", 1) do
+          assert_difference("Doorkeeper::AccessToken.count", 1) do
+            post "/api/v1/auth/signup", params: {
+              user: {
+                email: invitation.email,
+                password: "SecurePass123!",
+                first_name: "Invited",
+                last_name: "User"
+              },
+              device: @device_info,
+              invitation_token: invitation.token
+            }
+          end
+        end
+      end
+    end
+
+    assert_response :created
+    response_data = JSON.parse(response.body)
+    created_user = User.find(response_data["user"]["id"])
+    assert_equal family.id, created_user.family_id
+    assert_equal "member", created_user.role
+    assert invitation.reload.accepted_at.present?
+  end
+
+  test "should reject invitation signup when email does not match token" do
+    inviter = users(:family_admin)
+    invitation = inviter.family.invitations.create!(
+      email: "mobile-invited-only@example.com",
+      role: "member",
+      inviter: inviter
+    )
+
+    assert_no_difference("User.count") do
+      post "/api/v1/auth/signup", params: {
+        user: {
+          email: "wrong-mobile-invite@example.com",
+          password: "SecurePass123!",
+          first_name: "Wrong",
+          last_name: "Invite"
+        },
+        device: @device_info,
+        invitation_token: invitation.token
+      }
+    end
+
+    assert_response :unprocessable_entity
+    assert_nil invitation.reload.accepted_at
+  end
+
   test "should reject invalid invite code" do
     # Mock invite code requirement
     Api::V1::AuthController.any_instance.stubs(:invite_code_required?).returns(false)
@@ -234,6 +295,41 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
     response_data = JSON.parse(response.body)
     assert_equal "Invalid invite code", response_data["error"]
+  end
+
+  test "should login with invitation token and join invited family" do
+    inviter = users(:family_admin)
+    target_family = inviter.family
+    source_family = Family.create!(
+      name: "Existing Mobile Invite Family",
+      currency: "USD",
+      locale: "en",
+      date_format: "%m-%d-%Y"
+    )
+    invited_user = source_family.users.create!(
+      email: "existing-mobile-invite@example.com",
+      password: "SecurePass123!",
+      password_confirmation: "SecurePass123!"
+    )
+    invitation = target_family.invitations.create!(
+      email: invited_user.email,
+      role: "member",
+      inviter: inviter
+    )
+
+    post "/api/v1/auth/login", params: {
+      email: invited_user.email,
+      password: "SecurePass123!",
+      device: @device_info,
+      invitation_token: invitation.token
+    }
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal invited_user.id.to_s, response_data.dig("user", "id")
+    assert_equal target_family.id, invited_user.reload.family_id
+    assert_equal "member", invited_user.role
+    assert invitation.reload.accepted_at.present?
   end
 
   test "should login existing user and return OAuth tokens" do
@@ -316,6 +412,115 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     assert response_data["access_token"].present?
   end
 
+  test "should issue WebAuthn MFA options after valid password" do
+    user = users(:family_admin)
+    password = user_password_test
+    user.setup_mfa!
+    user.enable_mfa!
+    user.webauthn_credentials.create!(
+      credential_id: "credential-id",
+      public_key: "public-key",
+      sign_count: 0,
+      transports: [ "internal" ]
+    )
+
+    options = stub(challenge: "webauthn-challenge")
+    options.stubs(:as_json).returns({ challenge: "webauthn-challenge", allowCredentials: [ { id: "credential-id" } ] })
+    WebAuthn::RelyingParty.any_instance.stubs(:options_for_authentication).returns(options)
+
+    post "/api/v1/auth/webauthn_options", params: {
+      email: user.email,
+      password: password
+    }
+
+    assert_response :success
+
+    response_data = JSON.parse(response.body)
+    assert response_data["challenge_id"].present?
+    assert_equal 300, response_data["expires_in_seconds"]
+    assert_equal "webauthn-challenge", response_data.dig("public_key", "challenge")
+  end
+
+  test "should login with valid WebAuthn MFA assertion" do
+    user = users(:family_admin)
+    password = user_password_test
+    user.setup_mfa!
+    user.enable_mfa!
+    credential_record = user.webauthn_credentials.create!(
+      credential_id: "credential-id",
+      public_key: "public-key",
+      sign_count: 1,
+      transports: [ "internal" ]
+    )
+    challenge_id = SecureRandom.uuid
+    Rails.cache.write("api:v1:webauthn_authentication:#{user.id}:#{challenge_id}", "webauthn-challenge")
+
+    credential = stub(id: "credential-id", sign_count: 4)
+    credential.expects(:verify).with(
+      "webauthn-challenge",
+      public_key: "public-key",
+      sign_count: 1,
+      user_presence: true
+    )
+    WebAuthn::Credential.stubs(:from_get).returns(credential)
+
+    assert_difference("Doorkeeper::AccessToken.count", 1) do
+      post "/api/v1/auth/webauthn_verify", params: {
+        email: user.email,
+        password: password,
+        challenge_id: challenge_id,
+        credential: webauthn_assertion_payload,
+        device: @device_info
+      }
+    end
+
+    assert_response :success
+
+    response_data = JSON.parse(response.body)
+    assert response_data["access_token"].present?
+    assert_equal user.id.to_s, response_data.dig("user", "id")
+    assert_equal 4, credential_record.reload.sign_count
+    assert credential_record.last_used_at.present?
+    assert_nil Rails.cache.read("api:v1:webauthn_authentication:#{user.id}:#{challenge_id}")
+  end
+
+  test "should reject expired WebAuthn MFA challenge" do
+    user = users(:family_admin)
+    password = user_password_test
+    user.setup_mfa!
+    user.enable_mfa!
+    user.webauthn_credentials.create!(
+      credential_id: "credential-id",
+      public_key: "public-key",
+      sign_count: 0
+    )
+
+    post "/api/v1/auth/webauthn_verify", params: {
+      email: user.email,
+      password: password,
+      challenge_id: SecureRandom.uuid,
+      credential: webauthn_assertion_payload,
+      device: @device_info
+    }
+
+    assert_response :unprocessable_entity
+    assert_equal "webauthn_challenge_expired", JSON.parse(response.body)["error"]
+  end
+
+  test "should reject WebAuthn MFA options with invalid password" do
+    user = users(:family_admin)
+    user.setup_mfa!
+    user.enable_mfa!
+
+    post "/api/v1/auth/webauthn_options", params: {
+      email: user.email,
+      password: "wrong-password"
+    }
+
+    assert_response :unauthorized
+    assert_equal "Invalid email or password", JSON.parse(response.body)["error"]
+  end
+
   test "should revoke existing tokens for same device on login" do
     user = users(:family_admin)
     password = user_password_test
@@ -373,6 +578,149 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
     response_data = JSON.parse(response.body)
     assert_equal "Invalid email or password", response_data["error"]
+  end
+
+  test "request password reset returns generic accepted response and sends email for local user" do
+    user = users(:family_admin)
+
+    assert_enqueued_emails 1 do
+      post "/api/v1/auth/password_reset", params: { email: user.email }
+    end
+
+    assert_response :accepted
+    response_data = JSON.parse(response.body)
+    assert_equal "If an account exists, password reset instructions will be sent.", response_data["message"]
+  end
+
+  test "request password reset does not send email for missing or sso-only users" do
+    sso_user = users(:sso_only)
+
+    assert_no_enqueued_emails do
+      post "/api/v1/auth/password_reset", params: { email: "missing@example.com" }
+      assert_response :accepted
+
+      post "/api/v1/auth/password_reset", params: { email: sso_user.email }
+      assert_response :accepted
+    end
+  end
+
+  test "request password reset rejects when password features are disabled" do
+    AuthConfig.stubs(:password_features_enabled?).returns(false)
+
+    post "/api/v1/auth/password_reset", params: { email: users(:family_admin).email }
+
+    assert_response :forbidden
+    assert_equal "password_reset_disabled", JSON.parse(response.body)["error"]
+  end
+
+  test "reset password updates password with a valid token" do
+    user = users(:family_admin)
+    token = user.generate_token_for(:password_reset)
+
+    patch "/api/v1/auth/password_reset",
+          params: {
+            token: token,
+            user: {
+              password: "new-password",
+              password_confirmation: "new-password"
+            }
+          }
+
+    assert_response :success
+    assert_equal "Password has been reset", JSON.parse(response.body)["message"]
+    assert user.reload.authenticate("new-password")
+  end
+
+  test "reset password rejects invalid token and sso-only users" do
+    patch "/api/v1/auth/password_reset",
+          params: {
+            token: "invalid",
+            user: {
+              password: "new-password",
+              password_confirmation: "new-password"
+            }
+          }
+
+    assert_response :unprocessable_entity
+    assert_equal "invalid_token", JSON.parse(response.body)["error"]
+
+    sso_user = users(:sso_only)
+    patch "/api/v1/auth/password_reset",
+          params: {
+            token: sso_user.generate_token_for(:password_reset),
+            user: {
+              password: "new-password",
+              password_confirmation: "new-password"
+            }
+          }
+
+    assert_response :unprocessable_entity
+    assert_equal "sso_only_user", JSON.parse(response.body)["error"]
+    assert_nil sso_user.reload.password_digest
+  end
+
+  test "confirm email applies a pending email change" do
+    user = users(:new_email)
+    user.update!(email: "old-confirm@example.com", unconfirmed_email: "new-confirm@example.com")
+    token = user.generate_token_for(:email_confirmation)
+
+    post "/api/v1/auth/email_confirmation", params: { token: token }
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal "Email confirmed", response_data["message"]
+    assert_equal "new-confirm@example.com", response_data.dig("user", "email")
+    assert_equal "new-confirm@example.com", user.reload.email
+    assert_nil user.unconfirmed_email
+  end
+
+  test "confirm email rejects invalid token" do
+    post "/api/v1/auth/email_confirmation", params: { token: "invalid" }
+
+    assert_response :unprocessable_entity
+    assert_equal "invalid_token", JSON.parse(response.body)["error"]
+  end
+
+  test "resend email confirmation requires auth and pending email change" do
+    user = users(:family_admin)
+    user.api_keys.active.destroy_all
+    api_key = ApiKey.create!(
+      user: user,
+      name: "Email Confirmation Key",
+      scopes: [ "read_write" ],
+      source: "mobile",
+      display_key: "email_confirmation_#{SecureRandom.hex(8)}"
+    )
+    user.update!(unconfirmed_email: "pending-mobile@example.com")
+
+    assert_enqueued_emails 1 do
+      post "/api/v1/auth/email_confirmation/resend", headers: { "X-Api-Key" => api_key.plain_key }
+    end
+
+    assert_response :accepted
+    assert_equal "Confirmation email sent", JSON.parse(response.body)["message"]
+
+    user.update!(unconfirmed_email: nil)
+    post "/api/v1/auth/email_confirmation/resend", headers: { "X-Api-Key" => api_key.plain_key }
+
+    assert_response :unprocessable_entity
+    assert_equal "no_pending_email_change", JSON.parse(response.body)["error"]
+  end
+
+  test "resend email confirmation requires write scope" do
+    user = users(:family_admin)
+    user.api_keys.active.destroy_all
+    api_key = ApiKey.create!(
+      user: user,
+      name: "Email Confirmation Read Key",
+      scopes: [ "read" ],
+      source: "mobile",
+      display_key: "email_confirmation_read_#{SecureRandom.hex(8)}"
+    )
+
+    post "/api/v1/auth/email_confirmation/resend", headers: { "X-Api-Key" => api_key.plain_key }
+
+    assert_response :forbidden
   end
 
   test "should login even when OAuth application is missing" do
@@ -837,4 +1185,20 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     assert_equal "AI is not available for your account", response_data["error"]
     assert_not user.reload.ai_enabled
   end
+
+  private
+
+    def webauthn_assertion_payload
+      {
+        id: "credential-id",
+        rawId: "credential-id",
+        type: "public-key",
+        response: {
+          authenticatorData: "authenticator-data",
+          clientDataJSON: "client-data-json",
+          signature: "signature",
+          userHandle: nil
+        }
+      }
+    end
 end

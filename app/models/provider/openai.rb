@@ -271,13 +271,15 @@ class Provider::Openai < Provider
     user_identifier: nil,
     family: nil
   )
+    effective_model = chat_model(model)
+
     if supports_responses_endpoint?
       # Native path uses the Responses API which chains history via
       # `previous_response_id`; it does NOT need (and must not receive)
       # inline message history in the input payload.
       native_chat_response(
         prompt: prompt,
-        model: model,
+        model: effective_model,
         instructions: instructions,
         functions: functions,
         function_results: function_results,
@@ -290,7 +292,7 @@ class Provider::Openai < Provider
     else
       generic_chat_response(
         prompt: prompt,
-        model: model,
+        model: effective_model,
         instructions: instructions,
         functions: functions,
         function_results: function_results,
@@ -305,6 +307,12 @@ class Provider::Openai < Provider
 
   private
     attr_reader :client
+
+    def chat_model(requested_model)
+      return @default_model if custom_provider?
+
+      requested_model.presence || @default_model
+    end
 
     # Returns the first positive integer among env, setting, default. Treats
     # zero or negative values as "unset" and falls through — a 0-token budget
@@ -481,10 +489,14 @@ class Provider::Openai < Provider
           # If a streamer was provided, manually call it with the parsed response
           # to maintain the same contract as the streaming version
           if streamer.present?
-            # Emit output_text chunks for each message
-            parsed.messages.each do |message|
-              if message.output_text.present?
-                streamer.call(Provider::LlmConcept::ChatStreamChunk.new(type: "output_text", data: message.output_text, usage: nil))
+            # DeepSeek and some OpenAI-compatible providers return a short
+            # assistant preamble in the same message as tool_calls. Do not
+            # persist that as answer text; wait for the final no-tool response.
+            unless parsed.function_requests.any?
+              parsed.messages.each do |message|
+                if message.output_text.present?
+                  streamer.call(Provider::LlmConcept::ChatStreamChunk.new(type: "output_text", data: message.output_text, usage: nil))
+                end
               end
             end
 
@@ -527,55 +539,58 @@ class Provider::Openai < Provider
         payload << { role: "user", content: prompt }
       end
 
-      # If there are function results, we need to add the assistant message that made the tool calls
-      # followed by the tool messages with the results
-      if function_results.any?
-        # Build assistant message with tool_calls
-        tool_calls = function_results.map do |fn_result|
-          # Convert arguments to JSON string if it's not already a string
-          arguments = fn_result[:arguments]
-          arguments_str = arguments.is_a?(String) ? arguments : arguments.to_json
-
-          {
-            id: fn_result[:call_id],
-            type: "function",
-            function: {
-              name: fn_result[:name],
-              arguments: arguments_str
-            }
-          }
-        end
-
+      # If there are function results, add each assistant tool-call round followed
+      # by its tool outputs. OpenAI-compatible providers reject histories where
+      # later tool calls are collapsed into an earlier assistant message.
+      grouped_function_results(function_results).each do |round_results|
         payload << {
           role: "assistant",
           content: "",  # Some OpenAI-compatible APIs require string, not null
-          tool_calls: tool_calls
+          tool_calls: round_results.map { |fn_result| tool_call_payload(fn_result) }
         }
 
-        # Add function results as tool messages
-        function_results.each do |fn_result|
-          # Convert output to JSON string if it's not already a string
-          # OpenAI API requires content to be either a string or array of objects
-          # Handle nil explicitly to avoid serializing to "null"
-          output = fn_result[:output]
-          content = if output.nil?
-            ""
-          elsif output.is_a?(String)
-            output
-          else
-            output.to_json
-          end
-
-          payload << {
-            role: "tool",
-            tool_call_id: fn_result[:call_id],
-            name: fn_result[:name],
-            content: content
-          }
+        round_results.each do |fn_result|
+          payload << tool_result_payload(fn_result)
         end
       end
 
       payload
+    end
+
+    def grouped_function_results(function_results)
+      function_results.group_by { |fn_result| fn_result[:tool_round] || fn_result["tool_round"] || 0 }.values
+    end
+
+    def tool_call_payload(fn_result)
+      arguments = fn_result[:arguments]
+      arguments_str = arguments.is_a?(String) ? arguments : arguments.to_json
+
+      {
+        id: fn_result[:call_id],
+        type: "function",
+        function: {
+          name: fn_result[:name],
+          arguments: arguments_str
+        }
+      }
+    end
+
+    def tool_result_payload(fn_result)
+      output = fn_result[:output]
+      content = if output.nil?
+        ""
+      elsif output.is_a?(String)
+        output
+      else
+        output.to_json
+      end
+
+      {
+        role: "tool",
+        tool_call_id: fn_result[:call_id],
+        name: fn_result[:name],
+        content: content
+      }
     end
 
     def build_generic_tools(functions)
@@ -703,13 +718,19 @@ class Provider::Openai < Provider
       prompt_tokens = usage["prompt_tokens"] || usage["input_tokens"] || 0
       completion_tokens = usage["completion_tokens"] || usage["output_tokens"] || 0
       total_tokens = usage["total_tokens"] || 0
+      prompt_cache_hit_tokens = usage["prompt_cache_hit_tokens"] ||
+                                usage.dig("prompt_tokens_details", "cached_tokens") ||
+                                usage.dig("input_tokens_details", "cached_tokens")
+      prompt_cache_miss_tokens = usage["prompt_cache_miss_tokens"]
 
       Rails.logger.info("Extracted tokens - prompt: #{prompt_tokens}, completion: #{completion_tokens}, total: #{total_tokens}")
 
       estimated_cost = LlmUsage.calculate_cost(
         model: model,
         prompt_tokens: prompt_tokens,
-        completion_tokens: completion_tokens
+        completion_tokens: completion_tokens,
+        prompt_cache_hit_tokens: prompt_cache_hit_tokens,
+        prompt_cache_miss_tokens: prompt_cache_miss_tokens
       )
 
       # Log when we can't estimate the cost (e.g., custom/self-hosted models)

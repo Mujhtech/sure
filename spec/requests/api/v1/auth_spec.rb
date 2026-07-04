@@ -32,7 +32,8 @@ RSpec.describe 'API V1 Auth', type: :request do
             },
             required: %w[device_id device_name device_type os_version app_version]
           },
-          invite_code: { type: :string, nullable: true, description: 'Invite code (required when invites are enforced)' }
+          invite_code: { type: :string, nullable: true, description: 'Invite code (required when invites are enforced)' },
+          invitation_token: { type: :string, nullable: true, description: 'Family invitation token. When provided, the new user joins the invited family instead of creating a new family.' }
         },
         required: %w[user device]
       }
@@ -83,6 +84,7 @@ RSpec.describe 'API V1 Auth', type: :request do
           email: { type: :string, format: :email },
           password: { type: :string },
           otp_code: { type: :string, nullable: true, description: 'TOTP code if MFA is enabled' },
+          invitation_token: { type: :string, nullable: true, description: 'Family invitation token to accept after successful authentication.' },
           device: {
             type: :object,
             properties: {
@@ -123,6 +125,352 @@ RSpec.describe 'API V1 Auth', type: :request do
 
       response '401', 'invalid credentials or MFA required' do
         schema '$ref' => '#/components/schemas/ErrorResponse'
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/auth/webauthn_options' do
+    post 'Create WebAuthn MFA authentication options' do
+      tags 'Auth'
+      description 'After validating email and password, creates short-lived WebAuthn authentication options for accounts that require MFA and have registered passkeys/security keys.'
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :body, in: :body, required: true, schema: {
+        type: :object,
+        required: %w[email password],
+        properties: {
+          email: { type: :string, format: :email },
+          password: { type: :string }
+        }
+      }
+
+      let(:family) do
+        Family.create!(
+          name: 'WebAuthn Auth Family',
+          currency: 'USD',
+          locale: 'en',
+          date_format: '%m-%d-%Y'
+        )
+      end
+      let(:webauthn_user) do
+        family.users.create!(
+          email: 'webauthn-auth@example.com',
+          password: 'password123',
+          password_confirmation: 'password123',
+          role: 'admin'
+        )
+      end
+      let(:body) { { email: webauthn_user.email, password: 'password123' } }
+
+      response '200', 'WebAuthn MFA options created' do
+        schema type: :object,
+               required: %w[challenge_id expires_in_seconds public_key],
+               properties: {
+                 challenge_id: { type: :string, format: :uuid },
+                 expires_in_seconds: { type: :integer },
+                 public_key: {
+                   type: :object,
+                   additionalProperties: true,
+                   description: 'PublicKeyCredentialRequestOptions returned by the WebAuthn library.'
+                 }
+               }
+
+        before do
+          webauthn_user.setup_mfa!
+          webauthn_user.enable_mfa!
+          webauthn_user.webauthn_credentials.create!(
+            credential_id: 'docs-credential-id',
+            public_key: 'docs-public-key',
+            sign_count: 0
+          )
+          options = double('WebAuthnRequestOptions', challenge: 'docs-challenge')
+          allow(options).to receive(:as_json).and_return({ challenge: 'docs-challenge', allowCredentials: [ { id: 'docs-credential-id' } ] })
+          allow_any_instance_of(WebAuthn::RelyingParty).to receive(:options_for_authentication).and_return(options)
+        end
+
+        run_test!
+      end
+
+      response '401', 'invalid credentials' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:body) { { email: webauthn_user.email, password: 'wrong-password' } }
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/auth/webauthn_verify' do
+    post 'Verify WebAuthn MFA assertion and log in' do
+      tags 'Auth'
+      description 'Verifies a WebAuthn authentication assertion from the options endpoint and issues the normal mobile OAuth token response.'
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :body, in: :body, required: true, schema: {
+        type: :object,
+        required: %w[email password challenge_id credential device],
+        properties: {
+          email: { type: :string, format: :email },
+          password: { type: :string },
+          challenge_id: { type: :string, format: :uuid },
+          credential: {
+            type: :object,
+            additionalProperties: true,
+            description: 'PublicKeyCredential assertion returned by the platform authenticator.'
+          },
+          invitation_token: { type: :string, nullable: true, description: 'Family invitation token to accept after successful authentication.' },
+          device: {
+            type: :object,
+            required: %w[device_id device_name device_type os_version app_version],
+            properties: {
+              device_id: { type: :string },
+              device_name: { type: :string },
+              device_type: { type: :string },
+              os_version: { type: :string },
+              app_version: { type: :string }
+            }
+          }
+        }
+      }
+
+      let(:family) do
+        Family.create!(
+          name: 'WebAuthn Verify Family',
+          currency: 'USD',
+          locale: 'en',
+          date_format: '%m-%d-%Y'
+        )
+      end
+      let(:webauthn_user) do
+        family.users.create!(
+          email: 'webauthn-verify@example.com',
+          password: 'password123',
+          password_confirmation: 'password123',
+          role: 'admin'
+        )
+      end
+      let(:challenge_id) { SecureRandom.uuid }
+      let(:credential_payload) do
+        {
+          id: 'docs-credential-id',
+          rawId: 'docs-credential-id',
+          type: 'public-key',
+          response: {
+            authenticatorData: 'authenticator-data',
+            clientDataJSON: 'client-data-json',
+            signature: 'signature'
+          }
+        }
+      end
+      let(:body) do
+        {
+          email: webauthn_user.email,
+          password: 'password123',
+          challenge_id: challenge_id,
+          credential: credential_payload,
+          device: {
+            device_id: 'docs-device-id',
+            device_name: 'Docs iPhone',
+            device_type: 'ios',
+            os_version: '17.0',
+            app_version: '1.0.0'
+          }
+        }
+      end
+
+      response '200', 'WebAuthn MFA login successful' do
+        schema type: :object,
+               properties: {
+                 access_token: { type: :string },
+                 refresh_token: { type: :string },
+                 token_type: { type: :string },
+                 expires_in: { type: :integer },
+                 created_at: { type: :integer },
+                 user: {
+                   type: :object,
+                   properties: {
+                     id: { type: :string, format: :uuid },
+                     email: { type: :string },
+                     first_name: { type: :string },
+                     last_name: { type: :string },
+                     ui_layout: { type: :string, enum: %w[dashboard intro] },
+                     ai_enabled: { type: :boolean }
+                   }
+                 }
+               }
+
+        before do
+          webauthn_user.setup_mfa!
+          webauthn_user.enable_mfa!
+          webauthn_user.webauthn_credentials.create!(
+            credential_id: 'docs-credential-id',
+            public_key: 'docs-public-key',
+            sign_count: 0
+          )
+          Rails.cache.write("api:v1:webauthn_authentication:#{webauthn_user.id}:#{challenge_id}", 'docs-challenge')
+          verified_credential = double('WebAuthnCredential', id: 'docs-credential-id', sign_count: 1)
+          allow(verified_credential).to receive(:verify)
+          allow(WebAuthn::Credential).to receive(:from_get).and_return(verified_credential)
+        end
+
+        run_test!
+      end
+
+      response '422', 'challenge expired or credential invalid' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/auth/password_reset' do
+    post 'Request password reset' do
+      tags 'Auth'
+      description 'Requests a password reset email for local-password users. Always returns an accepted generic response when password reset is enabled to avoid account enumeration.'
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :body, in: :body, required: true, schema: {
+        type: :object,
+        required: %w[email],
+        properties: {
+          email: { type: :string, format: :email }
+        }
+      }
+
+      let(:body) { { email: 'api-user@example.com' } }
+
+      response '202', 'password reset requested if account exists' do
+        schema '$ref' => '#/components/schemas/GenericMessageResponse'
+
+        run_test!
+      end
+
+      response '403', 'password reset disabled' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        before do
+          allow(AuthConfig).to receive(:password_features_enabled?).and_return(false)
+        end
+
+        run_test!
+      end
+    end
+
+    patch 'Reset password with token' do
+      tags 'Auth'
+      description 'Sets a new password using a password reset token from email. SSO-only users cannot set a password through this endpoint.'
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :body, in: :body, required: true, schema: {
+        type: :object,
+        required: %w[token user],
+        properties: {
+          token: { type: :string },
+          user: {
+            type: :object,
+            required: %w[password password_confirmation],
+            properties: {
+              password: { type: :string },
+              password_confirmation: { type: :string }
+            }
+          }
+        }
+      }
+
+      let(:body) do
+        {
+          token: 'password-reset-token',
+          user: {
+            password: 'new-password',
+            password_confirmation: 'new-password'
+          }
+        }
+      end
+
+      response '200', 'password reset' do
+        schema '$ref' => '#/components/schemas/GenericMessageResponse'
+
+        run_test!
+      end
+
+      response '422', 'invalid token or validation failed' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/auth/email_confirmation' do
+    post 'Confirm pending email change' do
+      tags 'Auth'
+      description 'Confirms a pending email change using the token from the confirmation email.'
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :body, in: :body, required: true, schema: {
+        type: :object,
+        required: %w[token],
+        properties: {
+          token: { type: :string }
+        }
+      }
+
+      let(:body) { { token: 'email-confirmation-token' } }
+
+      response '200', 'email confirmed' do
+        schema type: :object,
+               required: %w[message user],
+               properties: {
+                 message: { type: :string },
+                 user: {
+                   type: :object,
+                   properties: {
+                     id: { type: :string, format: :uuid },
+                     email: { type: :string, format: :email },
+                     first_name: { type: :string, nullable: true },
+                     last_name: { type: :string, nullable: true },
+                     ui_layout: { type: :string, enum: %w[dashboard intro] },
+                     ai_enabled: { type: :boolean }
+                   }
+                 }
+               }
+
+        run_test!
+      end
+
+      response '422', 'invalid token' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/auth/email_confirmation/resend' do
+    post 'Resend pending email confirmation' do
+      tags 'Auth'
+      description 'Resends the confirmation email for the authenticated user pending email change. Requires a read_write API key or OAuth token.'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      response '202', 'confirmation email sent' do
+        schema '$ref' => '#/components/schemas/GenericMessageResponse'
+
+        run_test!
+      end
+
+      response '403', 'forbidden - requires read_write scope' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        run_test!
+      end
+
+      response '422', 'no pending email change' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
         run_test!
       end
     end

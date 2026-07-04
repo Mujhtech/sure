@@ -16,6 +16,13 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
       source: "web",
       display_key: "test_read_#{SecureRandom.hex(8)}"
     )
+    @read_write_api_key = ApiKey.create!(
+      user: @user,
+      name: "Test Read Write Key",
+      scopes: [ "read_write" ],
+      source: "mobile",
+      display_key: "test_rw_#{SecureRandom.hex(8)}"
+    )
 
     @other_family_user.api_keys.active.destroy_all
     @other_family_api_key = ApiKey.create!(
@@ -130,6 +137,10 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
     assert_nullable_equal account.institution_domain, response_body["institution_domain"]
     assert_equal account.created_at.iso8601, response_body["created_at"]
     assert_equal account.updated_at.iso8601, response_body["updated_at"]
+    assert response_body.key?("exclude_from_reports")
+    assert response_body.key?("default")
+    assert response_body.key?("transaction_default_eligible")
+    assert response_body.key?("syncing")
   end
 
   test "should return 404 for unknown account on show" do
@@ -181,6 +192,49 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
     api_key_without_read&.destroy
   end
 
+  test "should return account series" do
+    account = accounts(:depository)
+
+    get "/api/v1/accounts/#{account.id}/series",
+        params: { period: "last_30_days" },
+        headers: api_headers(@api_key)
+
+    assert_response :success
+    response_body = JSON.parse(response.body)
+    assert_equal account.id, response_body.dig("account", "id")
+    assert_equal "balance", response_body["view"]
+    assert response_body.key?("period")
+    assert response_body.key?("series")
+    assert response_body["series"].key?("values")
+    assert response_body["series"]["values"].is_a?(Array)
+  end
+
+  test "should reject invalid account series view" do
+    account = accounts(:depository)
+
+    get "/api/v1/accounts/#{account.id}/series",
+        params: { view: "market_value" },
+        headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    response_body = JSON.parse(response.body)
+    assert_equal "validation_failed", response_body["error"]
+    assert_match "view", response_body["message"]
+  end
+
+  test "should reject invalid account series date" do
+    account = accounts(:depository)
+
+    get "/api/v1/accounts/#{account.id}/series",
+        params: { start_date: "06/01/2026" },
+        headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    response_body = JSON.parse(response.body)
+    assert_equal "validation_failed", response_body["error"]
+    assert_equal "start_date must be an ISO 8601 date", response_body["message"]
+  end
+
   test "should hide disabled account by default on show" do
     inactive_account = accounts(:depository)
     inactive_account.disable!
@@ -211,13 +265,15 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
       accounts(:investment) => "brokerage",
       accounts(:loan) => "mortgage",
       accounts(:property) => "single_family_home",
-      accounts(:vehicle) => "sedan",
+      accounts(:vehicle) => nil,
       accounts(:crypto) => "exchange",
       accounts(:other_asset) => "collectible",
       accounts(:other_liability) => "personal_debt"
     }
 
-    expected_subtypes.each { |account, subtype| account.accountable.update!(subtype: subtype) }
+    expected_subtypes.each do |account, subtype|
+      account.accountable.update!(subtype: subtype) if account.accountable.respond_to?(:subtype=)
+    end
 
     expected_subtypes.each do |account, subtype|
       get "/api/v1/accounts/#{account.id}", headers: api_headers(@api_key)
@@ -225,6 +281,75 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
       assert_response :success
       assert_equal subtype, JSON.parse(response.body)["subtype"]
     end
+  end
+
+  test "should expose accountable details across account types" do
+    accounts(:depository).accountable.update!(subtype: "hsa")
+    accounts(:investment).accountable.update!(subtype: "brokerage")
+    accounts(:crypto).accountable.update!(subtype: "exchange", tax_treatment: "tax_deferred")
+    accounts(:loan).accountable.update!(subtype: "mortgage", rate_type: "fixed", interest_rate: 3.5, term_months: 360, initial_balance: 500000)
+    accounts(:vehicle).accountable.update!(make: "Honda", model: "Accord", year: 2024, mileage_value: 12000, mileage_unit: "mi")
+    accounts(:other_asset).accountable.update!(subtype: "collectible")
+    accounts(:other_liability).accountable.update!(subtype: "personal_debt")
+
+    credit_card = accounts(:credit_card).accountable
+    get "/api/v1/accounts/#{accounts(:credit_card).id}", headers: api_headers(@api_key)
+
+    assert_response :success
+    accountable = JSON.parse(response.body)["accountable"]
+    assert_equal credit_card.id, accountable["id"]
+    assert_equal "CreditCard", accountable["type"]
+    assert_equal "credit_card", accountable["key"]
+    assert_equal "credit_card", accountable["subtype"]
+    assert_equal credit_card.available_credit.to_s("F"), accountable["available_credit"]
+    assert_equal credit_card.minimum_payment.to_s("F"), accountable["minimum_payment"]
+    assert_equal credit_card.apr.to_s("F"), accountable["apr"]
+    assert_equal credit_card.annual_fee.to_s("F"), accountable["annual_fee"]
+    assert_equal credit_card.expiration_date.iso8601, accountable["expiration_date"]
+
+    get "/api/v1/accounts/#{accounts(:investment).id}", headers: api_headers(@api_key)
+    assert_response :success
+    accountable = JSON.parse(response.body)["accountable"]
+    assert_equal "Investment", accountable["type"]
+    assert_equal "brokerage", accountable["subtype"]
+    assert_equal "taxable", accountable["tax_treatment"]
+
+    get "/api/v1/accounts/#{accounts(:crypto).id}", headers: api_headers(@api_key)
+    assert_response :success
+    accountable = JSON.parse(response.body)["accountable"]
+    assert_equal "Crypto", accountable["type"]
+    assert_equal "exchange", accountable["subtype"]
+    assert_equal "tax_deferred", accountable["tax_treatment"]
+
+    get "/api/v1/accounts/#{accounts(:loan).id}", headers: api_headers(@api_key)
+    assert_response :success
+    accountable = JSON.parse(response.body)["accountable"]
+    assert_equal "Loan", accountable["type"]
+    assert_equal "mortgage", accountable["subtype"]
+    assert_equal "fixed", accountable["rate_type"]
+    assert_equal "3.5", accountable["interest_rate"]
+    assert_equal 360, accountable["term_months"]
+    assert_equal "500000.0", accountable["initial_balance"]
+
+    get "/api/v1/accounts/#{accounts(:property).id}", headers: api_headers(@api_key)
+    assert_response :success
+    accountable = JSON.parse(response.body)["accountable"]
+    assert_equal "Property", accountable["type"]
+    assert_equal 2002, accountable["year_built"]
+    assert_equal 1000, accountable["area_value"]
+    assert_equal "sqft", accountable["area_unit"]
+    assert_equal "123 Main Street", accountable.dig("address", "line1")
+    assert_equal "Los Angeles", accountable.dig("address", "locality")
+
+    get "/api/v1/accounts/#{accounts(:vehicle).id}", headers: api_headers(@api_key)
+    assert_response :success
+    accountable = JSON.parse(response.body)["accountable"]
+    assert_equal "Vehicle", accountable["type"]
+    assert_equal "Honda", accountable["make"]
+    assert_equal "Accord", accountable["model"]
+    assert_equal 2024, accountable["year"]
+    assert_equal 12000, accountable["mileage_value"]
+    assert_equal "mi", accountable["mileage_unit"]
   end
 
   test "should not return other family's accounts" do
@@ -236,6 +361,255 @@ class Api::V1::AccountsControllerTest < ActionDispatch::IntegrationTest
     # Should return empty array since other family has no accounts in fixtures
     assert_equal [], response_body["accounts"]
     assert_equal 0, response_body["pagination"]["total_count"]
+  end
+
+  test "should create manual account" do
+    Account.any_instance.stubs(:sync_later)
+
+    assert_difference("@user.family.accounts.count", 1) do
+      post api_v1_accounts_url,
+           params: {
+             account: {
+               name: "Mobile Savings",
+               balance: 1234.56,
+               currency: "USD",
+               subtype: "savings",
+               accountable_type: "Depository",
+               opening_balance_date: "2026-01-01"
+             }
+           },
+           headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :created
+    response_body = JSON.parse(response.body)
+    assert_equal "Mobile Savings", response_body["name"]
+    assert_equal "depository", response_body["account_type"]
+    assert_equal "savings", response_body["subtype"]
+    assert_equal false, response_body["linked"]
+    assert_equal true, response_body["manual"]
+  end
+
+  test "should create property account with address details" do
+    Account.any_instance.stubs(:sync_later)
+
+    assert_difference([ "@user.family.accounts.count", "Address.count" ], 1) do
+      post api_v1_accounts_url,
+           params: {
+             account: {
+               name: "Mobile Property",
+               balance: 425000,
+               currency: "USD",
+               accountable_type: "Property",
+               opening_balance_date: "2026-01-01",
+               accountable_attributes: {
+                 subtype: "single_family_home",
+                 year_built: 2018,
+                 area_value: 1800,
+                 area_unit: "sqft",
+                 address_attributes: {
+                   line1: "742 Evergreen Terrace",
+                   county: "Sangamon",
+                   locality: "Springfield",
+                   region: "IL",
+                   country: "US",
+                   postal_code: "62704"
+                 }
+               }
+             }
+           },
+           headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :created
+    response_body = JSON.parse(response.body)
+    assert_equal "property", response_body["account_type"]
+    assert_equal "Property", response_body.dig("accountable", "type")
+    assert_equal "single_family_home", response_body.dig("accountable", "subtype")
+    assert_equal 2018, response_body.dig("accountable", "year_built")
+    assert_equal 1800, response_body.dig("accountable", "area_value")
+    assert_equal "742 Evergreen Terrace", response_body.dig("accountable", "address", "line1")
+    assert_equal "Sangamon", response_body.dig("accountable", "address", "county")
+    assert_equal "Springfield", response_body.dig("accountable", "address", "locality")
+  end
+
+  test "should reject account create with invalid type" do
+    post api_v1_accounts_url,
+         params: {
+           account: {
+             name: "Bad Account",
+             balance: 10,
+             currency: "USD",
+             accountable_type: "UnknownType"
+           }
+         },
+         headers: api_headers(@read_write_api_key)
+
+    assert_response :unprocessable_entity
+  end
+
+  test "should update manual account" do
+    account = accounts(:depository)
+
+    patch api_v1_account_url(account),
+          params: { account: { name: "Renamed Checking", notes: "Updated from mobile", balance: 5100 } },
+          headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    response_body = JSON.parse(response.body)
+    assert_equal "Renamed Checking", response_body["name"]
+    assert_equal account.reload.balance_money.format, response_body["balance"]
+    assert_equal "Updated from mobile", account.notes
+  end
+
+  test "should update property account with address details" do
+    account = accounts(:property)
+    property = account.accountable
+    address = property.address
+
+    patch api_v1_account_url(account),
+          params: {
+            account: {
+              accountable_attributes: {
+                id: property.id,
+                subtype: "townhouse",
+                year_built: 1999,
+                area_value: 1450,
+                area_unit: "sqm",
+                address_attributes: {
+                  id: address.id,
+                  line1: "456 Oak Avenue",
+                  line2: "Unit 8",
+                  county: "King",
+                  locality: "Seattle",
+                  region: "WA",
+                  country: "US",
+                  postal_code: "98101"
+                }
+              }
+            }
+          },
+          headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    response_body = JSON.parse(response.body)
+    assert_equal "townhouse", response_body.dig("accountable", "subtype")
+    assert_equal 1999, response_body.dig("accountable", "year_built")
+    assert_equal 1450, response_body.dig("accountable", "area_value")
+    assert_equal "sqm", response_body.dig("accountable", "area_unit")
+    assert_equal "456 Oak Avenue", response_body.dig("accountable", "address", "line1")
+    assert_equal "Unit 8", response_body.dig("accountable", "address", "line2")
+    assert_equal "King", response_body.dig("accountable", "address", "county")
+    assert_equal "Seattle", property.reload.address.locality
+  end
+
+  test "should schedule manual account deletion" do
+    account = @user.family.accounts.create!(
+      owner: @user,
+      name: "Disposable Account",
+      balance: 25,
+      currency: "USD",
+      accountable: OtherAsset.new
+    )
+
+    assert_no_difference("@user.family.accounts.count") do
+      delete api_v1_account_url(account), headers: api_headers(@read_write_api_key)
+    end
+
+    assert_response :accepted
+    assert_equal "pending_deletion", account.reload.status
+  end
+
+  test "should reject linked account deletion" do
+    account = accounts(:connected)
+
+    delete api_v1_account_url(account), headers: api_headers(@read_write_api_key)
+
+    assert_response :unprocessable_entity
+    assert_not_equal "pending_deletion", account.reload.status
+  end
+
+  test "should unlink linked account" do
+    account = accounts(:connected)
+    assert account.linked?
+
+    delete "/api/v1/accounts/#{account.id}/unlink", headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    response_body = JSON.parse(response.body)
+    assert_equal account.id, response_body["id"]
+    assert_equal false, response_body["linked"]
+    assert_equal true, response_body["manual"]
+    assert_nil account.reload.plaid_account_id
+    assert_not account.linked?
+  end
+
+  test "should reject unlink for manual account" do
+    account = accounts(:depository)
+    assert_not account.linked?
+
+    delete "/api/v1/accounts/#{account.id}/unlink", headers: api_headers(@read_write_api_key)
+
+    assert_response :unprocessable_entity
+    response_body = JSON.parse(response.body)
+    assert_equal "validation_failed", response_body["error"]
+    assert_equal "Account is not linked to a provider", response_body["message"]
+  end
+
+  test "should reject unlink with read-only key" do
+    account = accounts(:connected)
+
+    delete "/api/v1/accounts/#{account.id}/unlink", headers: api_headers(@api_key)
+
+    assert_response :forbidden
+    assert account.reload.linked?
+  end
+
+  test "should toggle account active status" do
+    account = accounts(:depository)
+
+    patch toggle_active_api_v1_account_url(account), headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    assert_equal "disabled", JSON.parse(response.body)["status"]
+
+    patch toggle_active_api_v1_account_url(account), headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    assert_equal "active", JSON.parse(response.body)["status"]
+  end
+
+  test "should toggle exclude from reports" do
+    account = accounts(:depository)
+
+    patch toggle_exclude_from_reports_api_v1_account_url(account), headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    assert_equal true, JSON.parse(response.body)["exclude_from_reports"]
+    assert_equal true, account.reload.exclude_from_reports?
+  end
+
+  test "should set and remove default account" do
+    account = accounts(:depository)
+
+    patch set_default_api_v1_account_url(account), headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    assert_equal true, JSON.parse(response.body)["default"]
+    assert_equal account.id, @user.reload.default_account_id
+
+    patch remove_default_api_v1_account_url(account), headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    assert_nil @user.reload.default_account_id
+  end
+
+  test "should reject account mutation with read-only key" do
+    account = accounts(:depository)
+
+    patch toggle_exclude_from_reports_api_v1_account_url(account), headers: api_headers(@api_key)
+
+    assert_response :forbidden
   end
 
   test "should handle pagination parameters" do

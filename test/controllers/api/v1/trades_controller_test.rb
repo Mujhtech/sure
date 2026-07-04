@@ -671,6 +671,41 @@ class Api::V1::TradesControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
+  # UNLOCK action tests
+  test "should unlock trade for provider sync" do
+    entry = entries(:trade)
+    trade = entry.trade
+    entry.update!(user_modified: true, locked_attributes: { "name" => Time.current.iso8601 })
+    trade.update!(locked_attributes: { "qty" => Time.current.iso8601 })
+
+    post unlock_api_v1_trade_url(trade), headers: api_headers(read_write_api_key)
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal trade.id, body["id"]
+    assert_not entry.reload.user_modified?
+    assert_empty entry.locked_attributes
+    assert_empty trade.reload.locked_attributes
+  end
+
+  test "should reject unlock with read-only API key" do
+    post unlock_api_v1_trade_url(entries(:trade).trade), headers: api_headers(read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should reject unlock for non-existent trade" do
+    post unlock_api_v1_trade_url(SecureRandom.uuid), headers: api_headers(read_write_api_key)
+
+    assert_response :not_found
+  end
+
+  test "should reject unlock without API key" do
+    post unlock_api_v1_trade_url(entries(:trade).trade)
+
+    assert_response :unauthorized
+  end
+
   # Non-numeric amount returns 422
   test "create deposit with non-numeric amount returns 422" do
     post "/api/v1/trades",

@@ -38,6 +38,15 @@ class LlmUsage < ApplicationRecord
       "gemini-2.5-pro" => { prompt: 1.25, completion: 10.00 },
       "gemini-2.5-flash" => { prompt: 0.3, completion: 2.50 }
     },
+    # DeepSeek pricing per 1M tokens (as of Jul 2026)
+    # Source: https://api-docs.deepseek.com/quick_start/pricing
+    "deepseek" => {
+      "deepseek-v4-flash" => { prompt: 0.14, prompt_cache_hit: 0.0028, completion: 0.28 },
+      "deepseek-v4-pro" => { prompt: 0.435, prompt_cache_hit: 0.003625, completion: 0.87 },
+      # Deprecated compatibility aliases for deepseek-v4-flash.
+      "deepseek-chat" => { prompt: 0.14, prompt_cache_hit: 0.0028, completion: 0.28 },
+      "deepseek-reasoner" => { prompt: 0.14, prompt_cache_hit: 0.0028, completion: 0.28 }
+    },
     # Anthropic pricing per 1M tokens (Claude 4.x family, as of May 2026)
     # Source: https://www.anthropic.com/pricing
     "anthropic" => {
@@ -52,7 +61,15 @@ class LlmUsage < ApplicationRecord
   # Calculate cost for a model and token usage
   # Provider is automatically inferred from the model using the pricing map
   # Returns nil if pricing is not available for the model (e.g., custom/self-hosted providers)
-  def self.calculate_cost(model:, prompt_tokens:, completion_tokens:, cache_creation_tokens: 0, cache_read_tokens: 0)
+  def self.calculate_cost(
+    model:,
+    prompt_tokens:,
+    completion_tokens:,
+    cache_creation_tokens: 0,
+    cache_read_tokens: 0,
+    prompt_cache_hit_tokens: nil,
+    prompt_cache_miss_tokens: nil
+  )
     provider = infer_provider(model)
     pricing = find_pricing(provider, model)
 
@@ -61,8 +78,13 @@ class LlmUsage < ApplicationRecord
       return nil
     end
 
-    # Pricing is per 1M tokens, so divide by 1_000_000
-    prompt_cost = (prompt_tokens * pricing[:prompt]) / 1_000_000.0
+    # Pricing is per 1M tokens, so divide by 1_000_000.
+    prompt_cost = prompt_cost_for(
+      pricing: pricing,
+      prompt_tokens: prompt_tokens,
+      prompt_cache_hit_tokens: prompt_cache_hit_tokens,
+      prompt_cache_miss_tokens: prompt_cache_miss_tokens
+    )
     completion_cost = (completion_tokens * pricing[:completion]) / 1_000_000.0
 
     # Anthropic prompt-cache tokens bill relative to the input rate: cache
@@ -81,6 +103,24 @@ class LlmUsage < ApplicationRecord
     cost = (prompt_cost + completion_cost + cache_creation_cost + cache_read_cost).round(6)
     Rails.logger.info("Calculated cost for #{provider}/#{model}: $#{cost} (#{prompt_tokens} prompt + #{cache_creation_tokens.to_i} cache-write + #{cache_read_tokens.to_i} cache-read input, #{completion_tokens} completion)")
     cost
+  end
+
+  def self.prompt_cost_for(pricing:, prompt_tokens:, prompt_cache_hit_tokens: nil, prompt_cache_miss_tokens: nil)
+    prompt_tokens = prompt_tokens.to_i
+
+    unless pricing[:prompt_cache_hit]
+      return (prompt_tokens * pricing[:prompt]) / 1_000_000.0
+    end
+
+    cache_hit_tokens = prompt_cache_hit_tokens.to_i
+    cache_miss_tokens =
+      if prompt_cache_miss_tokens.nil?
+        [ prompt_tokens - cache_hit_tokens, 0 ].max
+      else
+        prompt_cache_miss_tokens.to_i
+      end
+
+    ((cache_miss_tokens * pricing[:prompt]) + (cache_hit_tokens * pricing[:prompt_cache_hit])) / 1_000_000.0
   end
 
   # Find pricing for a model, with prefix matching support

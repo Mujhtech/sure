@@ -521,38 +521,172 @@ Rails.application.routes.draw do
       # Authentication endpoints
       post "auth/signup", to: "auth#signup"
       post "auth/login", to: "auth#login"
+      post "auth/webauthn_options", to: "auth#webauthn_options"
+      post "auth/webauthn_verify", to: "auth#webauthn_verify"
       post "auth/refresh", to: "auth#refresh"
       post "auth/sso_exchange", to: "auth#sso_exchange"
       post "auth/sso_link", to: "auth#sso_link"
       post "auth/sso_create_account", to: "auth#sso_create_account"
+      post "auth/password_reset", to: "auth#request_password_reset"
+      patch "auth/password_reset", to: "auth#reset_password"
+      post "auth/email_confirmation", to: "auth#confirm_email"
+      post "auth/email_confirmation/resend", to: "auth#resend_email_confirmation"
       patch "auth/enable_ai", to: "auth#enable_ai"
 
+      resource :app_info, only: [ :show ], controller: :app_info do
+        get :changelog
+        get :feedback
+      end
+
       # Production API endpoints
-      resources :accounts, only: [ :index, :show ]
+      resources :accounts, only: [ :index, :show, :create, :update, :destroy ] do
+        member do
+          post :sync
+          get :series
+          delete :unlink
+          patch :toggle_active
+          patch :toggle_exclude_from_reports
+          patch :set_default
+          patch :remove_default
+        end
+
+        resource :sharing, controller: "account_sharings", only: [ :show, :update ]
+      end
+      resources :account_types, only: [ :index ]
       resources :balances, only: [ :index, :show ]
-      resources :budgets, only: [ :index, :show ]
-      resources :budget_categories, only: [ :index, :show ]
-      resources :categories, only: [ :index, :show, :create ]
-      resources :merchants, only: [ :index, :show, :create ]
-      resources :rules, only: [ :index, :show ]
+      resources :budgets, only: [ :index, :show, :create, :update ] do
+        post :copy_previous, on: :member
+      end
+      resources :budget_categories, only: [ :index, :show, :update ]
+      resources :categories, only: [ :index, :show, :create, :update, :destroy ] do
+        post :bootstrap, on: :collection
+        delete :destroy_all, on: :collection
+        post :merge, on: :collection
+        post :replace_and_destroy, on: :member
+      end
+      resources :merchants, only: [ :index, :show, :create, :update, :destroy ] do
+        collection do
+          post :merge
+          post :enhance
+        end
+      end
+      resources :rules, only: [ :index, :show, :create, :update, :destroy ] do
+        collection do
+          post :apply_all
+          delete :destroy_all
+          post :clear_ai_cache
+        end
+
+        post :apply, on: :member
+      end
       resources :rule_runs, only: [ :index, :show ]
       resources :securities, only: [ :index, :show ]
       resources :security_prices, only: [ :index, :show ]
-      resources :tags, only: [ :index, :show, :create, :update, :destroy ]
+      resources :tags, only: [ :index, :show, :create, :update, :destroy ] do
+        post :replace_and_destroy, on: :member
+        delete :destroy_all, on: :collection
+      end
 
-      resources :transactions, only: [ :index, :show, :create, :update, :destroy ]
-      resources :trades, only: [ :index, :show, :create, :update, :destroy ]
-      resources :holdings, only: [ :index, :show ]
-      resources :transfers, only: [ :index, :show ]
+      resources :transactions, only: [ :index, :show, :create, :update, :destroy ] do
+        collection do
+          patch :bulk_update
+          delete :bulk_delete
+          get "categorize", to: "transaction_categorizations#show"
+          post "categorize", to: "transaction_categorizations#create"
+          get "categorize/preview_rule", to: "transaction_categorizations#preview_rule"
+          patch "categorize/assign_entry", to: "transaction_categorizations#assign_entry"
+        end
+
+        member do
+          get :duplicate_candidates
+          post :merge_duplicate
+          post :dismiss_duplicate
+          post :mark_as_recurring
+          post :convert_to_trade
+          post :unlock
+          patch :tags, action: :update_tags
+        end
+
+        resources :attachments, controller: "transaction_attachments", only: [ :index, :show, :create, :destroy ]
+        resource :split, controller: "transaction_splits", only: [ :show, :create, :update, :destroy ]
+        resource :transfer_match, controller: "transfer_matches", only: [ :show, :create ]
+      end
+      resources :trades, only: [ :index, :show, :create, :update, :destroy ] do
+        post :unlock, on: :member
+      end
+      resources :holdings, only: [ :index, :show, :update, :destroy ] do
+        post :unlock_cost_basis, on: :member
+        patch :remap_security, on: :member
+        post :reset_security, on: :member
+        post :sync_prices, on: :member
+      end
+      resources :transfers, only: [ :index, :show, :create, :update, :destroy ] do
+        post :mark_as_recurring, on: :member
+      end
       resources :rejected_transfers, only: [ :index, :show ]
-      resources :valuations, only: [ :index, :create, :update, :show ]
-      resources :recurring_transactions, only: [ :index, :show, :create, :update, :destroy ]
-      resources :family_exports, only: [ :index, :show, :create ] do
+      resources :valuations, only: [ :index, :create, :update, :show, :destroy ] do
+        post :preview, on: :collection, action: :preview_create
+        post :preview, on: :member, action: :preview_update
+      end
+      resources :recurring_transactions, only: [ :index, :show, :create, :update, :destroy ] do
+        collection do
+          post :identify
+          post :cleanup
+          patch :update_settings
+        end
+
+        patch :toggle_status, on: :member
+      end
+      resources :goals, only: [ :index, :show, :create, :update, :destroy ] do
+        member do
+          patch :pause
+          patch :resume
+          patch :complete
+          patch :archive
+          patch :unarchive
+          patch :reopen
+        end
+
+        resources :pledges, controller: "goal_pledges", only: [ :create, :destroy ] do
+          patch :renew, on: :member
+        end
+      end
+      resources :family_exports, only: [ :index, :show, :create, :destroy ] do
         get :download, on: :member
       end
-      resources :imports, only: [ :index, :show, :create ] do
+      resources :family_documents, only: [ :index, :show, :create, :destroy ] do
+        get :search, on: :collection
+      end
+      resources :account_statements, only: [ :index, :show, :create, :update, :destroy ] do
+        member do
+          get :download
+          patch :link
+          patch :unlink
+          patch :reject
+        end
+      end
+      resources :family_members, only: [ :index, :destroy ]
+      resources :invitations, only: [ :index, :create, :destroy ] do
+        collection do
+          get "accept/:token", action: :accept_details, as: :accept_details
+          post "accept/:token", action: :accept, as: :accept
+        end
+      end
+      resources :invite_codes, only: [ :index, :create, :destroy ]
+      resources :imports, only: [ :index, :show, :create, :update, :destroy ] do
         post :preflight, on: :collection
-        get :rows, on: :member
+        member do
+          patch :configuration, action: :update_configuration
+          post :apply_template
+          get :qif_category_selection
+          patch :qif_category_selection, action: :update_qif_category_selection
+          get :sample_csv
+          get :rows
+          patch "rows/:row_id", action: :update_row, as: :row
+          patch "mappings/:mapping_id", action: :update_mapping, as: :mapping
+          post :publish
+          post :revert
+        end
       end
       resources :import_sessions, only: [ :show, :create ] do
         post :chunks, on: :member, action: :create_chunk
@@ -560,21 +694,108 @@ Rails.application.routes.draw do
       end
       resource :usage, only: [ :show ], controller: :usage
       resource :balance_sheet, only: [ :show ], controller: :balance_sheet
-      resource :family_settings, only: [ :show ], controller: :family_settings
+      resource :reports, only: [ :show ], controller: :reports do
+        get :export_transactions
+      end
+      resource :family_settings, only: [ :show, :update ], controller: :family_settings
+      resource :preferences, only: [ :show, :update ], controller: :preferences
+      resource :hosting, only: [ :show, :update ], controller: :hosting do
+        delete :clear_cache
+        delete :disconnect_external_assistant
+      end
+      resource :provider_settings, only: [ :show, :update ], controller: :provider_settings
+      resource :ai_settings, only: [ :show ], controller: :ai_settings
+      resource :llm_usage, only: [ :show ], controller: :llm_usages
+      resource :onboarding, only: [ :show ], controller: :onboarding do
+        patch :profile
+        patch :preferences
+        patch :goals
+        post :complete
+        post :start_trial
+      end
+      resource :subscription, only: [ :show ], controller: :subscriptions do
+        post :start_trial
+        post :checkout
+        post :portal
+      end
+      resources :api_keys, only: [ :index, :show, :create, :destroy ]
+      resources :mobile_devices, only: [ :index, :show, :destroy ]
+      resource :mobile_delta_sync, only: [ :create ], controller: :mobile_delta_sync
+      resource :security, only: [ :show ], controller: :security
+      resource :mfa, only: [ :show, :destroy ], controller: :mfa do
+        post :setup
+        post :verify
+      end
+      resources :webauthn_credentials, only: [ :create, :destroy ] do
+        post :options, on: :collection
+      end
+      resources :sso_identities, only: [ :destroy ]
+      resource :mcp, only: [ :show ], controller: :mcp do
+        delete "tokens/:token_id", action: :revoke_token, as: :token
+      end
+      resource :guide, only: [ :show ], controller: :guides
+      namespace :admin do
+        resources :users, only: [ :index, :update ]
+        resources :invitations, only: [ :destroy ]
+        resources :families, only: [] do
+          delete :invitations, on: :member, to: "invitations#destroy_all"
+        end
+        resources :sso_providers, only: [ :index, :show, :create, :update, :destroy ] do
+          patch :toggle, on: :member
+          post :test_connection, on: :member
+        end
+      end
+      resources :debug_logs, only: [ :index, :show ]
+      resources :currencies, only: [ :index, :show ]
+      get :exchange_rate, to: "exchange_rates#show"
+      get "accountable_sparklines/:accountable_type", to: "accountable_sparklines#show", as: :accountable_sparkline
       post :sync, to: "sync#create", as: :sync_job
       resources :syncs, only: [ :index, :show ] do
         get :latest, on: :collection
       end
-      resources :provider_connections, only: [ :index ]
+      resources :provider_connections, only: [ :index ] do
+        collection do
+          post :sync_all
+          post "plaid/link_token", action: :plaid_link_token, as: :plaid_link_token
+          post "plaid/:id/link_token", action: :plaid_update_link_token, as: :plaid_update_link_token
+          post "snaptrade/oauth_device_flow", action: :snaptrade_start_oauth_device_flow, as: :snaptrade_start_oauth_device_flow
+          post "snaptrade/:id/oauth_device_flow/complete", action: :snaptrade_complete_oauth_device_flow, as: :snaptrade_complete_oauth_device_flow
+          get "coinstats/:id/options", action: :coinstats_options, as: :coinstats_options
+          post "coinstats/:id/wallets", action: :coinstats_link_wallet, as: :coinstats_link_wallet
+          post "coinstats/:id/exchanges", action: :coinstats_link_exchange, as: :coinstats_link_exchange
+          get "enable_banking/:id/banks", action: :enable_banking_banks, as: :enable_banking_banks
+          post "enable_banking/:id/authorization", action: :enable_banking_start_authorization, as: :enable_banking_start_authorization
+          post "enable_banking/:id/authorization/complete", action: :enable_banking_complete_authorization, as: :enable_banking_complete_authorization
+          get "sophtron/:id/institutions", action: :sophtron_institutions, as: :sophtron_institutions
+          post "sophtron/:id/institution", action: :sophtron_connect_institution, as: :sophtron_connect_institution
+          get "sophtron/:id/connection_status", action: :sophtron_connection_status, as: :sophtron_connection_status
+          post "sophtron/:id/mfa", action: :sophtron_submit_mfa, as: :sophtron_submit_mfa
+          patch "sophtron/:id/manual_sync", action: :sophtron_toggle_manual_sync, as: :sophtron_toggle_manual_sync
+          post ":provider_key", action: :create, as: :create_provider
+          post ":provider_key/sync", action: :sync, as: :sync_provider
+          get ":provider_key/:id/accounts", action: :provider_accounts, as: :provider_accounts
+          post ":provider_key/:id/accounts/:provider_account_id/link", action: :link_provider_account, as: :link_provider_account
+          post ":provider_key/:id/sync", action: :sync_connection, as: :sync_connection
+          post ":provider_key/:id/replacement_suggestions/dismiss", action: :dismiss_replacement_suggestion, as: :dismiss_replacement_suggestion
+          patch ":provider_key/:id", action: :update, as: :update_provider
+          delete ":provider_key/:id", action: :destroy, as: :destroy_provider
+        end
+      end
 
       resources :chats, only: [ :index, :show, :create, :update, :destroy ] do
         resources :messages, only: [ :create ] do
           post :retry, on: :collection
+          post :report_timeout, on: :member
         end
       end
 
       get "users/reset/status", to: "users#reset_status"
       delete "users/reset", to: "users#reset"
+      delete "users/reset_with_sample_data", to: "users#reset_with_sample_data"
+      get "users/me", to: "users#show"
+      patch "users/me", to: "users#update"
+      patch "users/me/password", to: "users#update_password"
+      patch "users/me/rule_prompt_settings", to: "users#rule_prompt_settings"
       delete "users/me", to: "users#destroy"
 
       # Test routes for API controller testing (only available in test environment)

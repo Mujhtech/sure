@@ -46,6 +46,28 @@ json.data do
 
   json.verification @import.verification_payload if @import.is_a?(SureImport)
 
+  if @import.is_a?(PdfImport)
+    json.pdf_import do
+      json.pdf_uploaded @import.pdf_uploaded?
+      json.pdf_filename @import.pdf_filename
+      json.ai_processed @import.ai_processed?
+      json.document_type @import.document_type
+      json.ai_summary @import.ai_summary
+      json.statement_with_transactions @import.statement_with_transactions?
+      json.has_extracted_transactions @import.has_extracted_transactions?
+      json.extracted_transactions_count @import.extracted_transactions.size
+      json.rows_ready_for_review @import.pending? && @import.rows_count.positive?
+
+      if @import.account_statement.present?
+        json.account_statement do
+          json.partial! "api/v1/account_statements/account_statement", account_statement: @import.account_statement
+        end
+      else
+        json.account_statement nil
+      end
+    end
+  end
+
   # Only show a subset of rows for preview if needed, or link to a separate rows endpoint
   # json.sample_rows @import.rows.limit(5)
 end

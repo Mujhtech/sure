@@ -26,7 +26,15 @@ class Api::V1::FamilySettingsControllerTest < ActionDispatch::IntegrationTest
       source: "web",
       display_key: "test_read_#{SecureRandom.hex(8)}"
     )
+    @read_write_api_key = ApiKey.create!(
+      user: @user,
+      name: "Test Read Write Key",
+      scopes: [ "read_write" ],
+      source: "mobile",
+      display_key: "test_rw_#{SecureRandom.hex(8)}"
+    )
     Redis.new.del("api_rate_limit:#{@api_key.id}")
+    Redis.new.del("api_rate_limit:#{@read_write_api_key.id}")
   end
 
   test "shows current family settings snapshot" do
@@ -74,6 +82,48 @@ class Api::V1::FamilySettingsControllerTest < ActionDispatch::IntegrationTest
     assert_response :forbidden
   ensure
     api_key_without_read&.destroy
+  end
+
+  test "updates family settings with read write key" do
+    patch api_v1_family_settings_url,
+          params: {
+            family: {
+              name: "Mobile Family",
+              month_start_day: 7,
+              moniker: "Group",
+              default_account_sharing: "shared",
+              enabled_currencies: %w[USD EUR]
+            }
+          },
+          headers: api_headers(@read_write_api_key)
+
+    assert_response :success
+    response_body = JSON.parse(response.body)
+    assert_equal "Mobile Family", response_body["name"]
+    assert_equal 7, response_body["month_start_day"]
+    assert_equal "Group", response_body["moniker"]
+    assert_equal "shared", response_body["default_account_sharing"]
+    assert_equal "Mobile Family", @family.reload.name
+    assert_equal %w[USD EUR], @family.enabled_currencies
+  end
+
+  test "rejects family settings update with read only key" do
+    patch api_v1_family_settings_url,
+          params: { family: { name: "Nope" } },
+          headers: api_headers(@api_key)
+
+    assert_response :forbidden
+    assert_not_equal "Nope", @family.reload.name
+  end
+
+  test "rejects invalid family settings update" do
+    patch api_v1_family_settings_url,
+          params: { family: { month_start_day: 99 } },
+          headers: api_headers(@read_write_api_key)
+
+    assert_response :unprocessable_entity
+    response_body = JSON.parse(response.body)
+    assert_equal "validation_failed", response_body["error"]
   end
 
   private

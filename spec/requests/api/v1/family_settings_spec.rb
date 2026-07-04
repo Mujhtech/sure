@@ -52,7 +52,7 @@ RSpec.describe 'API V1 Family Settings', type: :request do
 
   path '/api/v1/family_settings' do
     get 'Retrieve family settings' do
-      description 'Retrieve a read-only snapshot of non-secret family configuration.'
+      description 'Retrieve a snapshot of non-secret family configuration.'
       tags 'Family Settings'
       security [ { apiKeyAuth: [] } ]
       produces 'application/json'
@@ -75,6 +75,68 @@ RSpec.describe 'API V1 Family Settings', type: :request do
         schema '$ref' => '#/components/schemas/ErrorResponse'
 
         let(:'X-Api-Key') { api_key_without_read_scope.plain_key }
+
+        run_test!
+      end
+    end
+
+    patch 'Update family settings' do
+      description 'Update family configuration. Requires a read_write key and family admin user.'
+      tags 'Family Settings'
+      security [ { apiKeyAuth: [] } ]
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :body, in: :body, required: true, schema: {
+        type: :object,
+        properties: {
+          family: {
+            type: :object,
+            properties: {
+              name: { type: :string },
+              currency: { type: :string },
+              locale: { type: :string },
+              date_format: { type: :string },
+              country: { type: :string },
+              timezone: { type: :string },
+              month_start_day: { type: :integer, minimum: 1, maximum: 28 },
+              moniker: { type: :string, enum: Family::MONIKERS },
+              default_account_sharing: { type: :string, enum: %w[shared private] },
+              enabled_currencies: { type: :array, items: { type: :string } }
+            }
+          }
+        },
+        required: %w[family]
+      }
+
+      let(:body) do
+        {
+          family: {
+            name: 'Mobile Family',
+            month_start_day: 5,
+            default_account_sharing: 'private',
+            enabled_currencies: %w[USD EUR]
+          }
+        }
+      end
+
+      response '200', 'family settings updated' do
+        schema '$ref' => '#/components/schemas/FamilySettings'
+
+        run_test!
+      end
+
+      response '403', 'forbidden - api key missing read_write scope' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:'X-Api-Key') { api_key_without_read_scope.plain_key }
+
+        run_test!
+      end
+
+      response '422', 'invalid family settings' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:body) { { family: { month_start_day: 99 } } }
 
         run_test!
       end

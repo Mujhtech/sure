@@ -587,6 +587,83 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
+  test "should reject update on read-only shared account" do
+    shared_owner = users(:family_member)
+    shared_account = @family.accounts.create!(
+      owner: shared_owner,
+      name: "Shared Read Only Checking",
+      balance: 0,
+      currency: "USD",
+      accountable: Depository.new
+    )
+    shared_account.share_with!(@user, permission: "read_only")
+    entry = shared_account.entries.create!(
+      name: "Read Only Shared Transaction",
+      amount: 20,
+      currency: "USD",
+      date: Date.current,
+      entryable: Transaction.new
+    )
+
+    put api_v1_transaction_url(entry.transaction),
+        params: { transaction: { name: "Blocked Update" } },
+        headers: api_headers(@api_key)
+
+    assert_response :forbidden
+    assert_equal "Read Only Shared Transaction", entry.reload.name
+  end
+
+  test "should allow annotation update on read write shared account without changing financial fields" do
+    shared_owner = users(:family_member)
+    shared_account = @family.accounts.create!(
+      owner: shared_owner,
+      name: "Shared Annotation Checking",
+      balance: 0,
+      currency: "USD",
+      accountable: Depository.new
+    )
+    shared_account.share_with!(@user, permission: "read_write")
+    entry = shared_account.entries.create!(
+      name: "Shared Annotation Transaction",
+      amount: 20,
+      currency: "USD",
+      date: Date.current,
+      entryable: Transaction.new
+    )
+    category = @family.categories.create!(
+      name: "Shared Annotation Category #{SecureRandom.hex(4)}",
+      color: "#4CAF50",
+      lucide_icon: "tag"
+    )
+    merchant = @family.merchants.create!(name: "Shared Annotation Merchant #{SecureRandom.hex(4)}")
+
+    put api_v1_transaction_url(entry.transaction),
+        params: {
+          transaction: {
+            name: "Blocked Name",
+            amount: 999,
+            date: Date.current - 10.days,
+            notes: "Allowed annotation",
+            category_id: category.id,
+            merchant_id: merchant.id,
+            tag_ids: [ Tag.first.id ]
+          }
+        },
+        headers: api_headers(@api_key)
+
+    assert_response :success
+
+    entry.reload
+    transaction = entry.transaction.reload
+    assert_equal "Shared Annotation Transaction", entry.name
+    assert_equal BigDecimal("20"), entry.amount
+    assert_equal Date.current, entry.date
+    assert_equal "Allowed annotation", entry.notes
+    assert_equal category.id, transaction.category_id
+    assert_equal merchant.id, transaction.merchant_id
+    assert_equal [ Tag.first.id ], transaction.tag_ids
+  end
+
   test "should preserve tags when tag_ids not provided in update" do
     # Set up transaction with existing tags
     original_tags = [ Tag.first, Tag.second ]
@@ -656,25 +733,206 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal new_tags.map(&:id), @transaction.tag_ids
   end
 
-  # DESTROY action tests
-  test "should destroy transaction" do
-  entry_to_delete = @account.entries.create!(
-    name: "Transaction to Delete",
-    amount: 10.00,
-    currency: "USD",
-    date: Date.current,
-    entryable: Transaction.new
-  )
-  transaction_to_delete = entry_to_delete.transaction
+  test "should update tags through dedicated tags endpoint" do
+    @transaction.tags = [ Tag.first ]
+    @transaction.save!
 
-  assert_difference("@account.entries.count", -1) do
-    delete api_v1_transaction_url(transaction_to_delete), headers: api_headers(@api_key)
+    patch tags_api_v1_transaction_url(@transaction),
+          params: { transaction: { tag_ids: [ Tag.second.id ] } },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+
+    response_data = JSON.parse(response.body)
+    assert_equal [ Tag.second.id ], @transaction.reload.tag_ids
+    assert_equal [ Tag.second.id ], response_data["tags"].map { |tag| tag["id"] }
   end
 
-  assert_response :success
-  response_data = JSON.parse(response.body)
-  assert response_data.key?("message")
-end
+  test "should clear tags through dedicated tags endpoint" do
+    @transaction.tags = [ Tag.first, Tag.second ]
+    @transaction.save!
+
+    patch tags_api_v1_transaction_url(@transaction),
+          params: { transaction: { tag_ids: [] } },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    assert_empty @transaction.reload.tags
+    assert_empty JSON.parse(response.body)["tags"]
+  end
+
+  test "should allow read write shared account user to update tags through dedicated endpoint" do
+    shared_owner = users(:family_member)
+    shared_account = @family.accounts.create!(
+      owner: shared_owner,
+      name: "Shared Annotatable Checking",
+      balance: 0,
+      currency: "USD",
+      accountable: Depository.new
+    )
+    shared_account.share_with!(@user, permission: "read_write")
+    entry = shared_account.entries.create!(
+      name: "Shared Annotatable Transaction",
+      amount: 20,
+      currency: "USD",
+      date: Date.current,
+      entryable: Transaction.new
+    )
+
+    patch tags_api_v1_transaction_url(entry.transaction),
+          params: { transaction: { tag_ids: [ Tag.first.id ] } },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    assert_equal [ Tag.first.id ], entry.transaction.reload.tag_ids
+  end
+
+  test "should reject read only shared account user updating tags through dedicated endpoint" do
+    shared_owner = users(:family_member)
+    shared_account = @family.accounts.create!(
+      owner: shared_owner,
+      name: "Shared Read Only Tag Checking",
+      balance: 0,
+      currency: "USD",
+      accountable: Depository.new
+    )
+    shared_account.share_with!(@user, permission: "read_only")
+    entry = shared_account.entries.create!(
+      name: "Shared Read Only Tag Transaction",
+      amount: 20,
+      currency: "USD",
+      date: Date.current,
+      entryable: Transaction.new
+    )
+
+    patch tags_api_v1_transaction_url(entry.transaction),
+          params: { transaction: { tag_ids: [ Tag.first.id ] } },
+          headers: api_headers(@api_key)
+
+    assert_response :forbidden
+    assert_empty entry.transaction.reload.tags
+  end
+
+  test "should ignore tags outside current family through dedicated tags endpoint" do
+    other_family = Family.create!(
+      name: "Other API Family",
+      currency: "USD",
+      locale: "en",
+      date_format: "%m-%d-%Y"
+    )
+    other_tag = other_family.tags.create!(name: "Other Family", color: "#123456")
+
+    patch tags_api_v1_transaction_url(@transaction),
+          params: { transaction: { tag_ids: [ Tag.first.id, other_tag.id ] } },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    assert_equal [ Tag.first.id ], @transaction.reload.tag_ids
+  end
+
+  # BULK UPDATE action tests
+  test "should bulk update transactions" do
+    entry_one = create_test_transaction_entry(name: "Bulk update one")
+    entry_two = create_test_transaction_entry(name: "Bulk update two")
+
+    patch bulk_update_api_v1_transactions_url,
+          params: {
+            bulk_update: {
+              entry_ids: [ entry_one.id, entry_two.id ],
+              name: "Mobile bulk update",
+              notes: "Updated from mobile"
+            }
+          },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+
+    response_data = JSON.parse(response.body)
+    assert_equal 2, response_data["requested_count"]
+    assert_equal 2, response_data["matched_count"]
+    assert_equal 2, response_data["updated_count"]
+    assert_equal 0, response_data["skipped_count"]
+    assert_equal "Mobile bulk update", entry_one.reload.name
+    assert_equal "Mobile bulk update", entry_two.reload.name
+    assert_equal "Updated from mobile", entry_one.notes
+    assert_equal "Updated from mobile", entry_two.notes
+  end
+
+  test "should preserve tags when tag_ids not provided in bulk update" do
+    entry = create_test_transaction_entry(name: "Bulk preserve tags")
+    entry.transaction.tags = [ Tag.first ]
+    entry.transaction.save!
+
+    patch bulk_update_api_v1_transactions_url,
+          params: {
+            bulk_update: {
+              entry_ids: [ entry.id ],
+              name: "Bulk renamed"
+            }
+          },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    assert_equal [ Tag.first.id ], entry.transaction.reload.tag_ids
+  end
+
+  test "should clear tags when empty tag_ids explicitly provided in bulk update" do
+    entry = create_test_transaction_entry(name: "Bulk clear tags")
+    entry.transaction.tags = [ Tag.first, Tag.second ]
+    entry.transaction.save!
+
+    patch bulk_update_api_v1_transactions_url,
+          params: {
+            bulk_update: {
+              entry_ids: [ entry.id ],
+              tag_ids: []
+            }
+          },
+          headers: api_headers(@api_key)
+
+    assert_response :success
+    assert_empty entry.transaction.reload.tags
+  end
+
+  test "should reject bulk update with read-only API key" do
+    entry = create_test_transaction_entry(name: "Read only bulk update")
+
+    patch bulk_update_api_v1_transactions_url,
+          params: { bulk_update: { entry_ids: [ entry.id ], name: "Blocked" } },
+          headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should reject bulk update without entry ids" do
+    patch bulk_update_api_v1_transactions_url,
+          params: { bulk_update: { name: "Missing ids" } },
+          headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    response_data = JSON.parse(response.body)
+    assert_equal "entry_ids is required", response_data["message"]
+  end
+
+  # DESTROY action tests
+  test "should destroy transaction" do
+    entry_to_delete = @account.entries.create!(
+      name: "Transaction to Delete",
+      amount: 10.00,
+      currency: "USD",
+      date: Date.current,
+      entryable: Transaction.new
+    )
+    transaction_to_delete = entry_to_delete.transaction
+
+    assert_difference("@account.entries.count", -1) do
+      delete api_v1_transaction_url(transaction_to_delete), headers: api_headers(@api_key)
+    end
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert response_data.key?("message")
+  end
 
   test "should reject destroy with read-only API key" do
     delete api_v1_transaction_url(@transaction), headers: api_headers(@read_only_api_key)
@@ -691,6 +949,259 @@ end
     assert_response :unauthorized
   end
 
+  # BULK DELETE action tests
+  test "should bulk delete transactions" do
+    entry_one = create_test_transaction_entry(name: "Bulk delete one")
+    entry_two = create_test_transaction_entry(name: "Bulk delete two")
+
+    assert_difference("Entry.count", -2) do
+      delete bulk_delete_api_v1_transactions_url,
+             params: { bulk_delete: { entry_ids: [ entry_one.id, entry_two.id ] } },
+             headers: api_headers(@api_key)
+    end
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal 2, response_data["requested_count"]
+    assert_equal 2, response_data["deleted_count"]
+    assert_equal 0, response_data["skipped_count"]
+  end
+
+  test "should skip split children in bulk delete" do
+    parent_entry = create_test_transaction_entry(name: "Bulk split parent", amount: 100)
+    child_entry = @account.entries.create!(
+      name: "Bulk split child",
+      amount: 40,
+      currency: "USD",
+      date: parent_entry.date,
+      parent_entry: parent_entry,
+      entryable: Transaction.new
+    )
+
+    assert_no_difference("Entry.count") do
+      delete bulk_delete_api_v1_transactions_url,
+             params: { bulk_delete: { entry_ids: [ child_entry.id ] } },
+             headers: api_headers(@api_key)
+    end
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    assert_equal 1, response_data["requested_count"]
+    assert_equal 0, response_data["deleted_count"]
+    assert_equal 1, response_data["skipped_count"]
+    assert Entry.exists?(child_entry.id)
+  end
+
+  test "should reject bulk delete with read-only API key" do
+    entry = create_test_transaction_entry(name: "Read only bulk delete")
+
+    delete bulk_delete_api_v1_transactions_url,
+           params: { bulk_delete: { entry_ids: [ entry.id ] } },
+           headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should reject bulk delete without entry ids" do
+    delete bulk_delete_api_v1_transactions_url,
+           params: { bulk_delete: { entry_ids: [] } },
+           headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    response_data = JSON.parse(response.body)
+    assert_equal "entry_ids is required", response_data["message"]
+  end
+
+  # TRANSACTION ROW ACTION tests
+  test "should list duplicate candidates for pending transaction" do
+    pending_entry = create_test_transaction_entry(name: "Pending duplicate", amount: 25.00)
+    posted_entry = create_test_transaction_entry(name: "Posted duplicate", amount: 25.00, date: Date.current - 1.day)
+    pending_entry.transaction.update!(extra: { "plaid" => { "pending" => true } })
+
+    get duplicate_candidates_api_v1_transaction_url(pending_entry.transaction),
+        headers: api_headers(@api_key)
+
+    assert_response :success
+    response_data = JSON.parse(response.body)
+    candidate_ids = response_data["duplicate_candidates"].map { |candidate| candidate["entry_id"] }
+    assert_includes candidate_ids, posted_entry.id
+    assert response_data["pagination"].key?("has_more")
+  end
+
+  test "should reject duplicate candidates for posted transaction" do
+    entry = create_test_transaction_entry(name: "Posted only")
+
+    get duplicate_candidates_api_v1_transaction_url(entry.transaction),
+        headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    response_data = JSON.parse(response.body)
+    assert_equal "Transaction is not pending", response_data["message"]
+  end
+
+  test "should merge pending duplicate with posted entry" do
+    pending_entry = create_test_transaction_entry(name: "Pending merge", amount: 25.00)
+    posted_entry = create_test_transaction_entry(name: "Posted merge", amount: 25.00, date: Date.current - 1.day)
+    pending_entry.transaction.update!(extra: { "plaid" => { "pending" => true } })
+
+    assert_difference("Entry.count", -1) do
+      post merge_duplicate_api_v1_transaction_url(pending_entry.transaction),
+           params: { duplicate: { posted_entry_id: posted_entry.id } },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :success
+    assert_not Entry.exists?(pending_entry.id)
+    assert Entry.exists?(posted_entry.id)
+  end
+
+  test "should reject duplicate merge with invalid posted entry" do
+    pending_entry = create_test_transaction_entry(name: "Invalid pending merge", amount: 25.00)
+    pending_entry.transaction.update!(extra: { "plaid" => { "pending" => true } })
+
+    post merge_duplicate_api_v1_transaction_url(pending_entry.transaction),
+         params: { duplicate: { posted_entry_id: SecureRandom.uuid } },
+         headers: api_headers(@api_key)
+
+    assert_response :unprocessable_entity
+    response_data = JSON.parse(response.body)
+    assert_equal "posted_entry_id is invalid", response_data["message"]
+  end
+
+  test "should dismiss duplicate suggestion" do
+    pending_entry = create_test_transaction_entry(name: "Dismiss duplicate", amount: 25.00)
+    posted_entry = create_test_transaction_entry(name: "Dismiss posted", amount: 25.00, date: Date.current - 1.day)
+    pending_entry.transaction.update!(
+      extra: {
+        "potential_posted_match" => {
+          "entry_id" => posted_entry.id,
+          "reason" => "manual_match",
+          "confidence" => "high"
+        }
+      }
+    )
+
+    post dismiss_duplicate_api_v1_transaction_url(pending_entry.transaction),
+         headers: api_headers(@api_key)
+
+    assert_response :success
+    assert_equal true, pending_entry.transaction.reload.extra.dig("potential_posted_match", "dismissed")
+  end
+
+  test "should mark transaction as recurring" do
+    entry = create_test_transaction_entry(name: "Monthly recurring", amount: 25.00, date: Date.current - 1.month)
+
+    assert_difference("RecurringTransaction.count", 1) do
+      post mark_as_recurring_api_v1_transaction_url(entry.transaction),
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :created
+    response_data = JSON.parse(response.body)
+    assert_equal entry.account.id, response_data["account"]["id"]
+    assert_equal "Monthly recurring", response_data["name"]
+  end
+
+  test "should return conflict when recurring transaction already exists" do
+    entry = create_test_transaction_entry(name: "Existing recurring", amount: 25.00, date: Date.current - 1.month)
+    RecurringTransaction.create_from_transaction(entry.transaction)
+
+    assert_no_difference("RecurringTransaction.count") do
+      post mark_as_recurring_api_v1_transaction_url(entry.transaction),
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :conflict
+    response_data = JSON.parse(response.body)
+    assert_equal "Recurring transaction already exists", response_data["message"]
+  end
+
+  test "should convert investment transaction to trade" do
+    investment_account = accounts(:investment)
+    security = Security.create!(ticker: "CONV", name: "Conversion Security", country_code: "US")
+    entry = investment_account.entries.create!(
+      name: "Brokerage buy",
+      amount: 250.00,
+      currency: "USD",
+      date: Date.current,
+      entryable: Transaction.new
+    )
+
+    assert_difference("Trade.count", 1) do
+      assert_difference("Entry.count", 1) do
+        post convert_to_trade_api_v1_transaction_url(entry.transaction),
+             params: {
+               trade_conversion: {
+                 security_id: security.id,
+                 qty: 5,
+                 investment_activity_label: "Buy"
+               }
+             },
+             headers: api_headers(@api_key)
+      end
+    end
+
+    assert_response :created
+    response_data = JSON.parse(response.body)
+    trade = Trade.find(response_data["id"])
+
+    assert_equal security.id, trade.security_id
+    assert_equal BigDecimal("5"), trade.qty
+    assert_equal BigDecimal("50"), trade.price
+    assert_equal "Buy", trade.investment_activity_label
+    assert_equal true, entry.reload.excluded?
+    assert trade.entry.user_modified?
+  end
+
+  test "should reject convert to trade for non-investment transaction" do
+    entry = create_test_transaction_entry(name: "Not an investment", amount: 250.00)
+    security = Security.create!(ticker: "NOINV", name: "No Investment Security", country_code: "US")
+
+    assert_no_difference("Trade.count") do
+      post convert_to_trade_api_v1_transaction_url(entry.transaction),
+           params: { trade_conversion: { security_id: security.id, qty: 5 } },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :unprocessable_entity
+    response_data = JSON.parse(response.body)
+    assert_equal "Transaction must belong to an investment account", response_data["message"]
+  end
+
+  test "should reject convert to trade with read-only API key" do
+    investment_account = accounts(:investment)
+    security = Security.create!(ticker: "READONLY", name: "Read Only Security", country_code: "US")
+    entry = investment_account.entries.create!(
+      name: "Read only conversion",
+      amount: 250.00,
+      currency: "USD",
+      date: Date.current,
+      entryable: Transaction.new
+    )
+
+    post convert_to_trade_api_v1_transaction_url(entry.transaction),
+         params: { trade_conversion: { security_id: security.id, qty: 5 } },
+         headers: api_headers(@read_only_api_key)
+
+    assert_response :forbidden
+  end
+
+  test "should unlock transaction for sync" do
+    entry = create_test_transaction_entry(name: "Locked transaction")
+    entry.mark_user_modified!
+    entry.lock_saved_attributes!
+    entry.transaction.lock_attr!(:tag_ids)
+
+    post unlock_api_v1_transaction_url(entry.transaction),
+         headers: api_headers(@api_key)
+
+    assert_response :success
+    entry.reload
+    assert_not entry.user_modified?
+    assert_empty entry.locked_attributes
+    assert_empty entry.transaction.locked_attributes
+  end
+
   # JSON structure tests
   test "transaction JSON should have expected structure" do
     get api_v1_transaction_url(@transaction), headers: api_headers(@api_key)
@@ -700,11 +1211,15 @@ end
 
     # Basic fields
     assert transaction_data.key?("id")
+    assert transaction_data.key?("entry_id")
     assert transaction_data.key?("date")
     assert transaction_data.key?("amount")
     assert transaction_data.key?("currency")
     assert transaction_data.key?("name")
     assert transaction_data.key?("classification")
+    assert transaction_data.key?("pending")
+    assert transaction_data.key?("protection")
+    assert transaction_data.key?("duplicate_suggestion")
     assert transaction_data.key?("created_at")
     assert transaction_data.key?("updated_at")
 
@@ -824,6 +1339,16 @@ end
 
     def create_disabled_account_transaction(name:, date: Date.current)
       create_account_transaction(status: "disabled", name: name, date: date)
+    end
+
+    def create_test_transaction_entry(name:, date: Date.current, amount: 10.00)
+      @account.entries.create!(
+        name: name,
+        amount: amount,
+        currency: "USD",
+        date: date,
+        entryable: Transaction.new
+      )
     end
 
     def create_account_transaction(status:, name:, date: Date.current)

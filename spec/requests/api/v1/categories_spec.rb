@@ -218,4 +218,139 @@ RSpec.describe 'API V1 Categories', type: :request do
       end
     end
   end
+
+  path '/api/v1/categories/merge' do
+    post 'Merge categories' do
+      description 'Move transactions, budget category rows, and subcategories from source categories into a target category, then delete the sources.'
+      tags 'Categories'
+      security [ { apiKeyAuth: [] } ]
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :body, in: :body, required: true, schema: {
+        '$ref' => '#/components/schemas/CategoryMergeRequest'
+      }
+
+      let!(:source_category) do
+        family.categories.create!(
+          name: 'Dining Out',
+          color: '#f97316',
+          lucide_icon: 'utensils'
+        )
+      end
+
+      response '200', 'categories merged' do
+        schema '$ref' => '#/components/schemas/CategoryMergeResponse'
+
+        let(:body) { { target_id: parent_category.id, source_ids: [ source_category.id ] } }
+
+        run_test!
+      end
+
+      response '422', 'invalid merge request' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:body) { { target_id: parent_category.id, source_ids: [ parent_category.id ] } }
+
+        run_test!
+      end
+
+      response '403', 'forbidden - api key missing read_write scope' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:read_only_api_key) do
+          key = ApiKey.generate_secure_key
+          ApiKey.create!(
+            user: user,
+            name: 'API Docs Read Key',
+            key: key,
+            scopes: %w[read],
+            source: 'mobile'
+          )
+        end
+        let(:'X-Api-Key') { read_only_api_key.plain_key }
+        let(:body) { { target_id: parent_category.id, source_ids: [ source_category.id ] } }
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/categories/{id}/replace_and_destroy' do
+    parameter name: :id, in: :path, type: :string, required: true, description: 'Source category ID to delete after optional replacement'
+
+    post 'Replace and delete a category' do
+      description 'Moves transactions from the source category to replacement_category_id, then deletes the source category. Omit replacement_category_id to leave transactions uncategorized.'
+      tags 'Categories'
+      security [ { apiKeyAuth: [] } ]
+      consumes 'application/json'
+      produces 'application/json'
+      parameter name: :body, in: :body, required: false, schema: {
+        '$ref' => '#/components/schemas/CategoryReplaceAndDestroyRequest'
+      }
+
+      let!(:source_category) do
+        family.categories.create!(
+          name: 'Old Dining',
+          color: '#f97316',
+          lucide_icon: 'utensils'
+        )
+      end
+      let(:id) { source_category.id }
+      let(:body) { { replacement_category_id: parent_category.id } }
+
+      response '200', 'category replaced and deleted' do
+        schema '$ref' => '#/components/schemas/CategoryReplaceAndDestroyResponse'
+
+        run_test!
+      end
+
+      response '200', 'category deleted and transactions left uncategorized' do
+        schema '$ref' => '#/components/schemas/CategoryReplaceAndDestroyResponse'
+
+        let(:body) { {} }
+
+        run_test!
+      end
+
+      response '422', 'invalid replacement category' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:body) { { replacement_category_id: id } }
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/categories/destroy_all' do
+    delete 'Delete all categories' do
+      tags 'Categories'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      response '200', 'categories deleted' do
+        schema '$ref' => '#/components/schemas/GenericMessageResponse'
+
+        run_test!
+      end
+
+      response '403', 'forbidden - api key missing read_write scope' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:read_only_api_key) do
+          key = ApiKey.generate_secure_key
+          ApiKey.create!(
+            user: user,
+            name: 'API Docs Read Key',
+            key: key,
+            scopes: %w[read],
+            source: 'mobile'
+          )
+        end
+        let(:'X-Api-Key') { read_only_api_key.plain_key }
+
+        run_test!
+      end
+    end
+  end
 end

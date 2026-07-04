@@ -233,6 +233,63 @@ RSpec.describe 'API V1 Valuations', type: :request do
     end
   end
 
+  path '/api/v1/valuations/preview' do
+    post 'Preview valuation creation reconciliation' do
+      tags 'Valuations'
+      security [ { apiKeyAuth: [] } ]
+      consumes 'application/json'
+      produces 'application/json'
+      description 'Dry-runs the same reconciliation used by valuation creation and returns old/new balance components without writing a valuation.'
+      parameter name: :body, in: :body, required: true, schema: {
+        type: :object,
+        required: %w[valuation],
+        properties: {
+          valuation: {
+            type: :object,
+            required: %w[account_id amount date],
+            properties: {
+              account_id: { type: :string, format: :uuid },
+              amount: { type: :number },
+              date: { type: :string, format: :date },
+              notes: { type: :string }
+            }
+          }
+        }
+      }
+
+      let(:body) do
+        {
+          valuation: {
+            account_id: account.id,
+            amount: 15000.00,
+            date: Date.current.to_s
+          }
+        }
+      end
+
+      response '200', 'valuation creation previewed' do
+        schema '$ref' => '#/components/schemas/ValuationPreviewResponse'
+
+        run_test!
+      end
+
+      response '422', 'validation error - missing amount' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:body) do
+          {
+            valuation: {
+              account_id: account.id,
+              date: Date.current.to_s
+            }
+          }
+        end
+
+        run_test!
+      end
+    end
+  end
+
   path '/api/v1/valuations/{id}' do
     parameter name: :id, in: :path, type: :string, required: true, description: 'Valuation ID (entry ID)'
 
@@ -253,6 +310,61 @@ RSpec.describe 'API V1 Valuations', type: :request do
         schema '$ref' => '#/components/schemas/ErrorResponse'
 
         let(:id) { SecureRandom.uuid }
+
+        run_test!
+      end
+    end
+
+    post 'Preview valuation update reconciliation' do
+      tags 'Valuations'
+      security [ { apiKeyAuth: [] } ]
+      consumes 'application/json'
+      produces 'application/json'
+      description 'Dry-runs the same reconciliation used by valuation update and returns old/new balance components without writing changes.'
+
+      let(:id) { valuation_id }
+
+      parameter name: :body, in: :body, required: true, schema: {
+        type: :object,
+        required: %w[valuation],
+        properties: {
+          valuation: {
+            type: :object,
+            required: %w[amount date],
+            properties: {
+              amount: { type: :number },
+              date: { type: :string, format: :date },
+              notes: { type: :string }
+            }
+          }
+        }
+      }
+
+      let(:body) do
+        {
+          valuation: {
+            amount: 12000.00,
+            date: (Date.current - 1.day).to_s
+          }
+        }
+      end
+
+      response '200', 'valuation update previewed' do
+        schema '$ref' => '#/components/schemas/ValuationPreviewResponse'
+
+        run_test!
+      end
+
+      response '422', 'validation error - only amount provided' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:body) do
+          {
+            valuation: {
+              amount: 12000.00
+            }
+          }
+        end
 
         run_test!
       end
@@ -334,6 +446,54 @@ RSpec.describe 'API V1 Valuations', type: :request do
             }
           }
         end
+
+        run_test!
+      end
+    end
+
+    delete 'Delete a valuation' do
+      tags 'Valuations'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      let(:id) { valuation_id }
+
+      response '200', 'valuation deleted' do
+        schema '$ref' => '#/components/schemas/DeleteResponse'
+
+        run_test!
+      end
+
+      response '401', 'unauthorized' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:'X-Api-Key') { nil }
+
+        run_test!
+      end
+
+      response '403', 'forbidden - api key missing read_write scope' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:read_only_api_key) do
+          key = ApiKey.generate_secure_key
+          ApiKey.create!(
+            user: user,
+            name: 'API Docs Read Key',
+            key: key,
+            scopes: %w[read],
+            source: 'mobile'
+          )
+        end
+        let(:'X-Api-Key') { read_only_api_key.plain_key }
+
+        run_test!
+      end
+
+      response '404', 'valuation not found' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:id) { SecureRandom.uuid }
 
         run_test!
       end

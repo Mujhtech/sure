@@ -58,15 +58,17 @@ class Api::V1::MessagesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "should retry last assistant message" do
-    skip "Retry functionality needs debugging"
+  test "should retry last user message" do
+    @chat.messages.destroy_all
 
-    # Create an assistant message to retry
-    assistant_message = @chat.messages.create!(
-      type: "AssistantMessage",
-      content: "Previous response",
+    user_message = @chat.messages.create!(
+      type: "UserMessage",
+      content: "Try again",
       ai_model: "gpt-4"
     )
+    @chat.messages.where(type: "AssistantMessage").destroy_all
+    @chat.update!(error: { message: "Provider failed" }.to_json)
+    clear_enqueued_jobs if respond_to?(:clear_enqueued_jobs)
 
     assert_enqueued_with(job: AssistantResponseJob) do
       post "/api/v1/chats/#{@chat.id}/messages/retry",
@@ -75,19 +77,86 @@ class Api::V1::MessagesControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :accepted
     response_body = JSON.parse(response.body)
+    assert_equal "Retry initiated", response_body["message"]
+    assert_equal @chat.id, response_body["chat_id"]
     assert response_body["message_id"].present?
+
+    pending_response = @chat.messages.find(response_body["message_id"])
+    assert_equal "AssistantMessage", pending_response.type
+    assert pending_response.pending?
+    assert_equal user_message.ai_model, pending_response.ai_model
+    assert_nil @chat.reload.error
   end
 
-  test "should not retry if no assistant message exists" do
-    # Remove all assistant messages
-    @chat.messages.where(type: "AssistantMessage").destroy_all
+  test "should not retry if latest conversation message is not a user message" do
+    @chat.messages.destroy_all
+    @chat.messages.create!(
+      type: "AssistantMessage",
+      content: "Done",
+      ai_model: "gpt-4",
+      status: :complete
+    )
 
     post "/api/v1/chats/#{@chat.id}/messages/retry.json",
       headers: bearer_auth_header(@write_token)
 
     assert_response :unprocessable_entity
     response_body = JSON.parse(response.body)
-    assert_equal "No assistant message to retry", response_body["error"]
+    assert_equal "No user message to retry", response_body["error"]
+  end
+
+  test "should report timed out assistant response" do
+    @chat.messages.destroy_all
+    @chat.update!(error: nil)
+    assistant_message = @chat.messages.create!(
+      type: "AssistantMessage",
+      content: "",
+      ai_model: "gpt-4",
+      status: :pending
+    )
+    assistant_message.update_columns(created_at: 2.minutes.ago, updated_at: 2.minutes.ago)
+
+    post "/api/v1/chats/#{@chat.id}/messages/#{assistant_message.id}/report_timeout",
+      headers: bearer_auth_header(@write_token)
+
+    assert_response :success
+    response_body = JSON.parse(response.body)
+    assert_equal "Undelivered response resolved", response_body["message"]
+    assert_equal true, response_body["resolved"]
+    assert_equal @chat.id, response_body["chat_id"]
+    assert_equal assistant_message.id, response_body["message_id"]
+    assert_not Message.exists?(assistant_message.id)
+    assert @chat.reload.error.present?
+  end
+
+  test "should not report active assistant response as timed out" do
+    @chat.messages.destroy_all
+    @chat.update!(error: nil)
+    assistant_message = @chat.messages.create!(
+      type: "AssistantMessage",
+      content: "",
+      ai_model: "gpt-4",
+      status: :pending
+    )
+
+    post "/api/v1/chats/#{@chat.id}/messages/#{assistant_message.id}/report_timeout",
+      headers: bearer_auth_header(@write_token)
+
+    assert_response :success
+    response_body = JSON.parse(response.body)
+    assert_equal "No timed out assistant response to resolve", response_body["message"]
+    assert_equal false, response_body["resolved"]
+    assert Message.exists?(assistant_message.id)
+    assert_nil @chat.reload.error
+  end
+
+  test "should return not found when reporting timeout for missing message" do
+    post "/api/v1/chats/#{@chat.id}/messages/#{SecureRandom.uuid}/report_timeout",
+      headers: bearer_auth_header(@write_token)
+
+    assert_response :not_found
+    response_body = JSON.parse(response.body)
+    assert_equal "Message not found", response_body["error"]
   end
 
   test "should not access messages in other user's chat" do

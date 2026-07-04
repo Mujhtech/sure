@@ -279,7 +279,7 @@ RSpec.describe 'API V1 Chats', type: :request do
   path '/api/v1/chats/{chat_id}/messages/retry' do
     parameter name: :chat_id, in: :path, type: :string, required: true, description: 'Chat ID'
 
-    post 'Retry the last assistant response' do
+    post 'Retry the last user message' do
       tags 'Chat Messages'
       security [ { apiKeyAuth: [] } ]
       produces 'application/json'
@@ -290,7 +290,14 @@ RSpec.describe 'API V1 Chats', type: :request do
         schema '$ref' => '#/components/schemas/RetryResponse'
 
         before do
-          allow_any_instance_of(AssistantMessage).to receive(:valid?).and_return(true)
+          chat.messages.destroy_all
+          chat.messages.create!(
+            type: 'UserMessage',
+            content: 'Please try that again.',
+            ai_model: 'gpt-4'
+          )
+          chat.messages.where(type: 'AssistantMessage').destroy_all
+          chat.update!(error: { message: 'Provider failed' }.to_json)
         end
 
         run_test!
@@ -304,7 +311,7 @@ RSpec.describe 'API V1 Chats', type: :request do
         run_test!
       end
 
-      response '422', 'no assistant message available' do
+      response '422', 'no user message available' do
         schema '$ref' => '#/components/schemas/ErrorResponse'
 
         let(:chat) do
@@ -312,6 +319,44 @@ RSpec.describe 'API V1 Chats', type: :request do
         end
 
         let(:chat_id) { chat.id }
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/chats/{chat_id}/messages/{id}/report_timeout' do
+    parameter name: :chat_id, in: :path, type: :string, required: true, description: 'Chat ID'
+    parameter name: :id, in: :path, type: :string, required: true, description: 'Message ID'
+
+    post 'Report an undelivered assistant response' do
+      tags 'Chat Messages'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      let(:chat_id) { chat.id }
+      let(:timed_out_message) do
+        chat.messages.create!(
+          type: 'AssistantMessage',
+          content: '',
+          ai_model: 'gpt-4',
+          status: :pending
+        ).tap do |message|
+          message.update_columns(created_at: 2.minutes.ago, updated_at: 2.minutes.ago)
+        end
+      end
+      let(:id) { timed_out_message.id }
+
+      response '200', 'timeout report accepted' do
+        schema '$ref' => '#/components/schemas/MessageTimeoutReportResponse'
+
+        run_test!
+      end
+
+      response '404', 'message not found' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:id) { SecureRandom.uuid }
 
         run_test!
       end

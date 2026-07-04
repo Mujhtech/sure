@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.2].define(version: 2026_06_25_230639) do
+ActiveRecord::Schema[7.2].define(version: 2026_07_03_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pgcrypto"
   enable_extension "plpgsql"
@@ -1380,6 +1380,45 @@ ActiveRecord::Schema[7.2].define(version: 2026_06_25_230639) do
     t.index ["user_id"], name: "index_mobile_devices_on_user_id"
   end
 
+  create_table "mobile_sync_events", force: :cascade do |t|
+    t.uuid "family_id", null: false
+    t.string "entity_type", null: false
+    t.uuid "entity_id"
+    t.string "operation", null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.datetime "occurred_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["family_id", "entity_type", "entity_id"], name: "idx_mobile_sync_events_entity"
+    t.index ["family_id", "id"], name: "idx_mobile_sync_events_family_revision"
+    t.index ["family_id"], name: "index_mobile_sync_events_on_family_id"
+    t.index ["occurred_at"], name: "idx_mobile_sync_events_occurred_at"
+  end
+
+  create_table "mobile_sync_operations", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "family_id", null: false
+    t.uuid "user_id", null: false
+    t.uuid "mobile_device_id"
+    t.string "client_change_id", null: false
+    t.string "entity_type", null: false
+    t.string "entity_id"
+    t.string "operation", null: false
+    t.string "status", default: "pending", null: false
+    t.bigint "base_revision"
+    t.jsonb "request_payload", default: {}, null: false
+    t.jsonb "response_payload", default: {}, null: false
+    t.text "error_message"
+    t.datetime "processed_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["family_id", "client_change_id"], name: "idx_mobile_sync_ops_client_change", unique: true
+    t.index ["family_id", "entity_type", "entity_id"], name: "idx_mobile_sync_ops_entity"
+    t.index ["family_id", "status"], name: "idx_mobile_sync_ops_status"
+    t.index ["family_id"], name: "index_mobile_sync_operations_on_family_id"
+    t.index ["mobile_device_id"], name: "index_mobile_sync_operations_on_mobile_device_id"
+    t.index ["user_id"], name: "index_mobile_sync_operations_on_user_id"
+  end
+
   create_table "oauth_access_grants", force: :cascade do |t|
     t.string "resource_owner_id", null: false
     t.bigint "application_id", null: false
@@ -2180,6 +2219,10 @@ ActiveRecord::Schema[7.2].define(version: 2026_06_25_230639) do
   add_foreign_key "mercury_items", "families"
   add_foreign_key "messages", "chats"
   add_foreign_key "mobile_devices", "users"
+  add_foreign_key "mobile_sync_events", "families"
+  add_foreign_key "mobile_sync_operations", "families"
+  add_foreign_key "mobile_sync_operations", "mobile_devices"
+  add_foreign_key "mobile_sync_operations", "users"
   add_foreign_key "oauth_access_grants", "oauth_applications", column: "application_id"
   add_foreign_key "oauth_access_tokens", "oauth_applications", column: "application_id"
   add_foreign_key "oidc_identities", "users"

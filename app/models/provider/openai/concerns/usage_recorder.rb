@@ -16,11 +16,17 @@ module Provider::Openai::Concerns::UsageRecorder
       prompt_tokens = usage_data["prompt_tokens"] || usage_data["input_tokens"] || 0
       completion_tokens = usage_data["completion_tokens"] || usage_data["output_tokens"] || 0
       total_tokens = usage_data["total_tokens"] || 0
+      prompt_cache_hit_tokens = usage_data["prompt_cache_hit_tokens"] ||
+                                usage_data.dig("prompt_tokens_details", "cached_tokens") ||
+                                usage_data.dig("input_tokens_details", "cached_tokens")
+      prompt_cache_miss_tokens = usage_data["prompt_cache_miss_tokens"]
 
       estimated_cost = LlmUsage.calculate_cost(
         model: model_name,
         prompt_tokens: prompt_tokens,
-        completion_tokens: completion_tokens
+        completion_tokens: completion_tokens,
+        prompt_cache_hit_tokens: prompt_cache_hit_tokens,
+        prompt_cache_miss_tokens: prompt_cache_miss_tokens
       )
 
       # Log when we can't estimate the cost (e.g., custom/self-hosted models)

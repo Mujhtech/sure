@@ -3,8 +3,9 @@
 class Api::V1::BudgetCategoriesController < Api::V1::BaseController
   include Pagy::Backend
 
-  before_action :ensure_read_scope
-  before_action :set_budget_category, only: :show
+  before_action :ensure_read_scope, only: %i[index show]
+  before_action :ensure_write_scope, only: :update
+  before_action :set_budget_category, only: %i[show update]
 
   def index
     budget_categories_query = apply_filters(budget_categories_scope)
@@ -24,6 +25,18 @@ class Api::V1::BudgetCategoriesController < Api::V1::BaseController
     render :show
   end
 
+  def update
+    @budget_category.update_budgeted_spending!(budgeted_spending_param)
+
+    render :show
+  rescue ActiveRecord::RecordInvalid => e
+    render json: {
+      error: "validation_failed",
+      message: "Budget category could not be updated",
+      errors: e.record.errors.full_messages
+    }, status: :unprocessable_entity
+  end
+
   private
 
     def set_budget_category
@@ -34,6 +47,17 @@ class Api::V1::BudgetCategoriesController < Api::V1::BaseController
 
     def ensure_read_scope
       authorize_scope!(:read)
+    end
+
+    def ensure_write_scope
+      authorize_scope!(:write)
+    end
+
+    def budgeted_spending_param
+      params.require(:budget_category)
+            .permit(:budgeted_spending)
+            .fetch(:budgeted_spending, nil)
+            .presence || 0
     end
 
     def budget_categories_scope

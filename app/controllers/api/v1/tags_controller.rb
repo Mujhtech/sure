@@ -14,8 +14,8 @@ module Api
     #
     class TagsController < BaseController
       before_action -> { authorize_scope!(:read) }, only: %i[index show]
-      before_action -> { authorize_scope!(:read_write) }, only: %i[create update destroy]
-      before_action :set_tag, only: %i[show update destroy]
+      before_action -> { authorize_scope!(:read_write) }, only: %i[create update destroy replace_and_destroy destroy_all]
+      before_action :set_tag, only: %i[show update destroy replace_and_destroy]
 
       # List all tags belonging to the family
       #
@@ -92,6 +92,56 @@ module Api
         render json: { error: "Failed to delete tag" }, status: :internal_server_error
       end
 
+      # Replace a tag's assignments with another family tag, then delete the source tag.
+      #
+      # @param id [String] The source tag ID
+      # @param replacement_tag_id [String] The target tag ID
+      # @return [Hash] JSON response with replacement details
+      def replace_and_destroy
+        replacement = replacement_tag
+        return if performed?
+
+        replaced_taggings_count = @tag.taggings.count
+        source_tag_id = @tag.id
+        source_tag_name = @tag.name
+
+        @tag.replace_and_destroy!(replacement)
+
+        render json: {
+          message: "Tag replaced and deleted successfully",
+          replaced_taggings_count: replaced_taggings_count,
+          deleted_tag: {
+            id: source_tag_id,
+            name: source_tag_name
+          },
+          replacement_tag: tag_json(replacement)
+        }, status: :ok
+      rescue ActiveRecord::RecordInvalid => e
+        render json: {
+          error: "validation_failed",
+          message: e.message,
+          errors: [ e.message ]
+        }, status: :unprocessable_entity
+      rescue StandardError => e
+        Rails.logger.error("API Tag Replace And Destroy Error: #{e.message}")
+        render json: { error: "Failed to replace and delete tag" }, status: :internal_server_error
+      end
+
+      # Delete all tags for the family
+      #
+      # @return [Hash] JSON response with the remaining tag count
+      def destroy_all
+        current_resource_owner.family.tags.destroy_all
+
+        render json: {
+          message: "Tags deleted successfully",
+          tags_count: current_resource_owner.family.tags.count
+        }, status: :ok
+      rescue StandardError => e
+        Rails.logger.error("API Tags Destroy All Error: #{e.message}")
+        render json: { error: "Failed to delete tags" }, status: :internal_server_error
+      end
+
       private
 
         # Find and set the tag from params
@@ -110,6 +160,40 @@ module Api
         # @return [ActionController::Parameters] Permitted parameters
         def tag_params
           params.require(:tag).permit(:name, :color)
+        end
+
+        def replacement_tag
+          replacement_tag_id = params[:replacement_tag_id].presence || params.dig(:tag, :replacement_tag_id).presence
+
+          unless replacement_tag_id
+            render json: {
+              error: "validation_failed",
+              message: "replacement_tag_id is required",
+              errors: [ "replacement_tag_id is required" ]
+            }, status: :unprocessable_entity
+            return
+          end
+
+          unless valid_uuid?(replacement_tag_id)
+            render json: {
+              error: "validation_failed",
+              message: "replacement_tag_id is invalid",
+              errors: [ "replacement_tag_id is invalid" ]
+            }, status: :unprocessable_entity
+            return
+          end
+
+          replacement = current_resource_owner.family.tags.find_by(id: replacement_tag_id)
+          unless replacement
+            render json: {
+              error: "validation_failed",
+              message: "Replacement tag not found",
+              errors: [ "Replacement tag not found" ]
+            }, status: :unprocessable_entity
+            return
+          end
+
+          replacement
         end
 
         # Serialize a tag to JSON format

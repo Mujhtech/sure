@@ -1,4 +1,8 @@
 class Tag < ApplicationRecord
+  include MobileSyncRecordable
+
+  record_mobile_sync_events_as "tag"
+
   belongs_to :family
   has_many :taggings, dependent: :destroy
   has_many :transactions, through: :taggings, source: :taggable, source_type: "Transaction"

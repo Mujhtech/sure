@@ -3,6 +3,7 @@
 json.id @message.id
 json.chat_id @message.chat_id
 json.type @message.type.underscore
+json.status @message.status
 json.role @message.role
 json.content @message.content
 json.model @message.ai_model if @message.type == "AssistantMessage"
