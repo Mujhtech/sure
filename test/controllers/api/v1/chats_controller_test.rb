@@ -73,6 +73,21 @@ class Api::V1::ChatsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "New chat", response_body["title"]
   end
 
+  test "should create chat with generated title from initial message" do
+    prompt = "Summarize my grocery spending this month and point out anything unusual."
+
+    assert_difference "Chat.count" do
+      post "/api/v1/chats",
+        params: { message: prompt },
+        headers: bearer_auth_header(@write_token)
+    end
+
+    assert_response :created
+    response_body = JSON.parse(response.body)
+    assert_equal prompt.first(80), response_body["title"]
+    assert_equal prompt, response_body["messages"].find { |message| message["type"] == "user_message" }["content"]
+  end
+
   test "should not create chat with read scope" do
     post "/api/v1/chats",
       params: { title: "New chat" },

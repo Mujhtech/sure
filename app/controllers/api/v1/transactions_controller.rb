@@ -50,6 +50,9 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       limit: safe_per_page_param
     )
 
+    @family_currency = family.currency
+    @transaction_exchange_rates = transaction_exchange_rates_for(@transactions, @family_currency)
+
     # Make per_page available to the template
     @per_page = safe_per_page_param
 
@@ -67,6 +70,9 @@ class Api::V1::TransactionsController < Api::V1::BaseController
   end
 
   def show
+    @family_currency = current_resource_owner.family.currency
+    @transaction_exchange_rates = transaction_exchange_rates_for([ @transaction ], @family_currency)
+
     # Rails will automatically use app/views/api/v1/transactions/show.json.jbuilder
     render :show
 
@@ -750,6 +756,23 @@ class Api::V1::TransactionsController < Api::V1::BaseController
     def amount_cents_for_entry(entry)
       money = entry.amount_money
       (money.amount * money.currency.minor_unit_conversion).round(0).to_i.abs
+    end
+
+    def transaction_exchange_rates_for(transactions, target_currency)
+      Array(transactions).each_with_object({}) do |transaction, rates|
+        entry = transaction.entry
+        from_currency = entry.currency
+        next if from_currency == target_currency
+
+        key = [ from_currency, entry.date ]
+        rates[key] ||= begin
+          rate = ExchangeRate.find_or_fetch_rate(from: from_currency, to: target_currency, date: entry.date)
+          if rate.nil?
+            Rails.logger.warn("No exchange rate found for #{from_currency}/#{target_currency} on #{entry.date}, using 1")
+          end
+          rate&.rate || 1
+        end
+      end
     end
 
     def resolve_conversion_security

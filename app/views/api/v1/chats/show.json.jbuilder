@@ -2,7 +2,9 @@
 
 json.partial! "chat", chat: @chat
 
-json.messages @messages do |message|
+messages = @messages || @chat.messages.ordered
+
+json.messages messages do |message|
   json.id message.id
   json.chat_id message.chat_id
   json.type message.type.underscore

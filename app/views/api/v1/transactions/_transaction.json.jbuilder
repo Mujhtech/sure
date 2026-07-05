@@ -1,33 +1,49 @@
 # frozen_string_literal: true
 
+entry = transaction.entry
+
 json.id transaction.id
-json.entry_id transaction.entry.id
-json.date transaction.entry.date
-json.amount transaction.entry.amount_money.format
+json.entry_id entry.id
+json.date entry.date
+json.amount entry.amount_money.format
 
 # Agent/automation-friendly numeric fields (avoid localized parsing and clarify sign)
 # `amount` in v1 is a localized string and may follow an accounting sign convention.
 # Expose minor units (cents) as integers to make the API agent-friendly.
 # Uses currency.minor_unit_conversion (e.g. 100 for USD/EUR, 1 for JPY, 1000 for KWD).
-amount_money = transaction.entry.amount_money
+amount_money = entry.amount_money
 conversion_factor = amount_money.currency.minor_unit_conversion
 amount_cents = (amount_money.amount * conversion_factor).round(0).to_i.abs
 json.amount_cents amount_cents
-json.signed_amount_cents(transaction.entry.classification == "income" ? amount_cents : -amount_cents)
+json.signed_amount_cents(entry.classification == "income" ? amount_cents : -amount_cents)
 
-json.currency transaction.entry.currency
-json.name transaction.entry.name
-json.notes transaction.entry.notes
-json.external_id transaction.entry.external_id
-json.source transaction.entry.source
-json.classification transaction.entry.classification
+family_currency = @family_currency || entry.account.family.currency
+converted_rate = if entry.currency == family_currency
+  1
+else
+  @transaction_exchange_rates&.dig([ entry.currency, entry.date ]) ||
+    ExchangeRate.find_or_fetch_rate(from: entry.currency, to: family_currency, date: entry.date)&.rate ||
+    1
+end
+converted_money = Money.new(amount_money.amount.abs * converted_rate.to_d, family_currency)
+converted_conversion_factor = converted_money.currency.minor_unit_conversion
+converted_amount_cents = (converted_money.amount * converted_conversion_factor).round(0).to_i.abs
+json.converted_amount_cents(entry.classification == "income" ? converted_amount_cents : -converted_amount_cents)
+json.converted_currency family_currency
+
+json.currency entry.currency
+json.name entry.name
+json.notes entry.notes
+json.external_id entry.external_id
+json.source entry.source
+json.classification entry.classification
 json.pending transaction.pending?
 json.protection do
-  json.protected transaction.entry.protected_from_sync?
-  json.reason transaction.entry.protection_reason
-  json.locked_fields transaction.entry.locked_field_names
-  json.user_modified transaction.entry.user_modified?
-  json.import_locked transaction.entry.import_locked?
+  json.protected entry.protected_from_sync?
+  json.reason entry.protection_reason
+  json.locked_fields entry.locked_field_names
+  json.user_modified entry.user_modified?
+  json.import_locked entry.import_locked?
 end
 
 if transaction.has_potential_duplicate?
@@ -45,9 +61,9 @@ end
 
 # Account information
 json.account do
-  json.id transaction.entry.account.id
-  json.name transaction.entry.account.name
-  json.account_type transaction.entry.account.accountable_type.underscore
+  json.id entry.account.id
+  json.name entry.account.name
+  json.account_type entry.account.accountable_type.underscore
 end
 
 # Category information
@@ -114,7 +130,6 @@ else
   json.transfer nil
 end
 
-entry = transaction.entry
 json.split do
   json.parent entry.split_parent?
   json.child entry.split_child?

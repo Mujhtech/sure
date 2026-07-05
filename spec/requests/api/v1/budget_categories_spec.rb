@@ -84,6 +84,9 @@ RSpec.describe 'API V1 Budget Categories', type: :request do
       parameter name: :end_date, in: :query, required: false,
                 schema: { type: :string, format: :date },
                 description: 'Filter budget categories whose budget ends on or before this date'
+      parameter name: :include_derived_amounts, in: :query, required: false,
+                schema: { type: :boolean },
+                description: 'Include actual spending, remaining budget, and historical average/median amounts'
 
       response '200', 'budget categories listed' do
         schema '$ref' => '#/components/schemas/BudgetCategoryCollection'
@@ -117,6 +120,30 @@ RSpec.describe 'API V1 Budget Categories', type: :request do
     end
   end
 
+  describe 'GET /api/v1/budget_categories with derived amounts' do
+    it 'includes opt-in actuals and historical spending fields' do
+      get '/api/v1/budget_categories',
+          params: { include_derived_amounts: true },
+          headers: { 'X-Api-Key' => api_key.plain_key }
+
+      expect(response).to have_http_status(:ok)
+
+      body = JSON.parse(response.body)
+      first_category = body.fetch('budget_categories').first
+
+      expect(first_category).to include(
+        'actual_spending',
+        'actual_spending_cents',
+        'available_to_spend',
+        'available_to_spend_cents',
+        'avg_monthly_expense',
+        'avg_monthly_expense_cents',
+        'median_monthly_expense',
+        'median_monthly_expense_cents'
+      )
+    end
+  end
+
   path '/api/v1/budget_categories/{id}' do
     parameter name: :id, in: :path, required: true, description: 'Budget category ID',
               schema: { type: :string, format: :uuid }
@@ -131,7 +158,16 @@ RSpec.describe 'API V1 Budget Categories', type: :request do
       response '200', 'budget category retrieved' do
         schema '$ref' => '#/components/schemas/BudgetCategory'
 
-        run_test!
+        run_test! do |response|
+          body = JSON.parse(response.body)
+
+          expect(body).to include(
+            'actual_spending',
+            'available_to_spend',
+            'avg_monthly_expense',
+            'median_monthly_expense'
+          )
+        end
       end
 
       response '401', 'unauthorized' do

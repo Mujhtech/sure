@@ -20,6 +20,10 @@ if include_derived_amounts
   json.actual_spending_cents money_to_minor_units.call(budget_category.actual_spending_money)
   json.available_to_spend budget_category.available_to_spend_money.format
   json.available_to_spend_cents money_to_minor_units.call(budget_category.available_to_spend_money)
+  json.avg_monthly_expense budget_category.avg_monthly_expense_money.format
+  json.avg_monthly_expense_cents money_to_minor_units.call(budget_category.avg_monthly_expense_money)
+  json.median_monthly_expense budget_category.median_monthly_expense_money.format
+  json.median_monthly_expense_cents money_to_minor_units.call(budget_category.median_monthly_expense_money)
 end
 
 json.category do

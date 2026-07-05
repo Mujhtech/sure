@@ -111,15 +111,13 @@ RSpec.describe 'API V1 Chats', type: :request do
         type: :object,
         properties: {
           title: { type: :string, example: 'Monthly budget review' },
-          message: { type: :string, description: 'Optional initial message in the chat' },
+          message: { type: :string, description: 'Optional initial message in the chat. When title is omitted, the server generates the title from this message.' },
           model: { type: :string, description: 'Optional OpenAI model identifier' }
-        },
-        required: %w[title]
+        }
       }
 
       let(:chat_params) do
         {
-          title: 'Travel planning',
           message: 'Can you help me plan a summer trip?',
           model: 'gpt-4-turbo'
         }

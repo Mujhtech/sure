@@ -51,6 +51,45 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert response_data["pagination"].key?("total_pages")
   end
 
+  test "should include converted amounts in family currency" do
+    @family.update!(currency: "NGN")
+    transaction_date = Date.current - 7.days
+    account = @family.accounts.create!(
+      name: "USD Converted Checking",
+      balance: 0,
+      currency: "USD",
+      accountable: Depository.new
+    )
+    entry = account.entries.create!(
+      name: "USD converted summary expense",
+      amount: 10,
+      currency: "USD",
+      date: transaction_date,
+      entryable: Transaction.new
+    )
+    ExchangeRate.where(from_currency: "USD", to_currency: "NGN", date: transaction_date).delete_all
+    ExchangeRate.create!(
+      from_currency: "USD",
+      to_currency: "NGN",
+      date: transaction_date,
+      rate: 1500
+    )
+
+    get api_v1_transactions_url,
+        params: { search: "USD converted summary expense" },
+        headers: api_headers(@api_key)
+    assert_response :success
+
+    response_data = JSON.parse(response.body)
+    transaction = response_data.fetch("transactions").find { |txn| txn["id"] == entry.transaction.id }
+
+    assert_not_nil transaction
+    assert_equal "USD", transaction["currency"]
+    assert_equal(-1000, transaction["signed_amount_cents"])
+    assert_equal "NGN", transaction["converted_currency"]
+    assert_equal(-1_500_000, transaction["converted_amount_cents"])
+  end
+
   test "should get index with read-only API key" do
     get api_v1_transactions_url, headers: api_headers(@read_only_api_key)
     assert_response :success
@@ -1323,17 +1362,25 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
     def assert_amount_cents_fields(txn_json)
       assert txn_json.key?("amount_cents"), "Expected amount_cents field"
       assert txn_json.key?("signed_amount_cents"), "Expected signed_amount_cents field"
+      assert txn_json.key?("converted_amount_cents"), "Expected converted_amount_cents field"
+      assert txn_json.key?("converted_currency"), "Expected converted_currency field"
       assert_kind_of Integer, txn_json["amount_cents"]
       assert_kind_of Integer, txn_json["signed_amount_cents"]
+      assert_kind_of Integer, txn_json["converted_amount_cents"]
+      assert_kind_of String, txn_json["converted_currency"]
       assert_operator txn_json["amount_cents"], :>=, 0, "amount_cents must be non-negative"
       assert_equal txn_json["amount_cents"].abs, txn_json["signed_amount_cents"].abs,
                    "Absolute values of amount_cents and signed_amount_cents must match"
       if txn_json["classification"] == "income"
         assert_operator txn_json["signed_amount_cents"], :>=, 0,
                         "income transactions should have non-negative signed_amount_cents"
+        assert_operator txn_json["converted_amount_cents"], :>=, 0,
+                        "income transactions should have non-negative converted_amount_cents"
       else
         assert_operator txn_json["signed_amount_cents"], :<=, 0,
                         "non-income transactions should have non-positive signed_amount_cents"
+        assert_operator txn_json["converted_amount_cents"], :<=, 0,
+                        "non-income transactions should have non-positive converted_amount_cents"
       end
     end
 

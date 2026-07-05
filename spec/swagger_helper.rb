@@ -2024,6 +2024,14 @@ RSpec.configure do |config|
               budgeted_spending_cents: { type: :integer },
               display_budgeted_spending: { type: :string },
               display_budgeted_spending_cents: { type: :integer },
+              actual_spending: { type: :string },
+              actual_spending_cents: { type: :integer },
+              available_to_spend: { type: :string },
+              available_to_spend_cents: { type: :integer },
+              avg_monthly_expense: { type: :string },
+              avg_monthly_expense_cents: { type: :integer },
+              median_monthly_expense: { type: :string },
+              median_monthly_expense_cents: { type: :integer },
               category: {
                 type: :object,
                 required: %w[id name color lucide_icon],
@@ -2056,6 +2064,10 @@ RSpec.configure do |config|
               actual_spending_cents: { type: :integer },
               available_to_spend: { type: :string },
               available_to_spend_cents: { type: :integer },
+              avg_monthly_expense: { type: :string },
+              avg_monthly_expense_cents: { type: :integer },
+              median_monthly_expense: { type: :string },
+              median_monthly_expense_cents: { type: :integer },
               category: {
                 type: :object,
                 required: %w[id name color lucide_icon],
@@ -3100,6 +3112,8 @@ RSpec.configure do |config|
               amount: { type: :string },
               amount_cents: { type: :integer },
               signed_amount_cents: { type: :integer },
+              converted_amount_cents: { type: :integer, description: 'Signed amount converted to family primary currency minor units' },
+              converted_currency: { type: :string, description: 'Family primary currency used for converted_amount_cents' },
               currency: { type: :string },
               name: { type: :string },
               notes: { type: :string, nullable: true },
@@ -5050,12 +5064,53 @@ RSpec.configure do |config|
           },
           BalanceSheet: {
             type: :object,
-            required: %w[currency net_worth assets liabilities],
+            required: %w[currency net_worth assets liabilities asset_groups liability_groups],
             properties: {
               currency: { type: :string, description: 'Family primary currency' },
               net_worth: { '$ref' => '#/components/schemas/Money' },
               assets: { '$ref' => '#/components/schemas/Money' },
-              liabilities: { '$ref' => '#/components/schemas/Money' }
+              liabilities: { '$ref' => '#/components/schemas/Money' },
+              asset_groups: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/BalanceSheetAccountGroup' }
+              },
+              liability_groups: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/BalanceSheetAccountGroup' }
+              }
+            }
+          },
+          BalanceSheetAccountGroup: {
+            type: :object,
+            required: %w[name account_type classification total weight accounts],
+            properties: {
+              name: { type: :string },
+              color: { type: :string, nullable: true },
+              account_type: { type: :string },
+              classification: { type: :string, enum: %w[asset liability] },
+              total: { '$ref' => '#/components/schemas/Money' },
+              weight: { type: :number },
+              accounts: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/BalanceSheetAccount' }
+              }
+            }
+          },
+          BalanceSheetAccount: {
+            type: :object,
+            required: %w[id name currency balance converted_balance classification account_type weight],
+            properties: {
+              id: { type: :string, format: :uuid },
+              name: { type: :string },
+              currency: { type: :string, description: 'Account native currency' },
+              balance: { '$ref' => '#/components/schemas/Money' },
+              converted_balance: {
+                '$ref' => '#/components/schemas/Money',
+                description: 'Account balance converted to the family primary currency'
+              },
+              classification: { type: :string, enum: %w[asset liability] },
+              account_type: { type: :string },
+              weight: { type: :number }
             }
           },
           SuccessMessage: {

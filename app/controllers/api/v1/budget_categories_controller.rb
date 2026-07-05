@@ -11,6 +11,7 @@ class Api::V1::BudgetCategoriesController < Api::V1::BaseController
     budget_categories_query = apply_filters(budget_categories_scope)
       .order("budgets.start_date DESC", "categories.name ASC")
     @per_page = safe_per_page_param
+    @include_derived_amounts = include_derived_amounts?
 
     @pagy, @budget_categories = pagy(
       budget_categories_query,
@@ -83,5 +84,9 @@ class Api::V1::BudgetCategoriesController < Api::V1::BaseController
       query = query.where("budgets.start_date >= ?", parse_date_param(:start_date)) if params[:start_date].present?
       query = query.where("budgets.end_date <= ?", parse_date_param(:end_date)) if params[:end_date].present?
       query
+    end
+
+    def include_derived_amounts?
+      ActiveModel::Type::Boolean.new.cast(params[:include_derived_amounts]) == true
     end
 end
