@@ -7,6 +7,9 @@ class AssistantConfigurableTest < ActiveSupport::TestCase
     config = Assistant.config_for(chat)
 
     assert_not_empty config[:functions]
+    assert_includes config[:instructions], "Northledger"
+    refute_includes config[:instructions], "Sure"
+    refute_includes config[:instructions], "open source"
     assert_includes config[:instructions], "You help users understand their financial data"
   end
 
@@ -16,6 +19,8 @@ class AssistantConfigurableTest < ActiveSupport::TestCase
     config = Assistant.config_for(chat)
 
     assert_equal [], config[:functions]
+    assert_includes config[:instructions], "Northledger"
+    refute_includes config[:instructions], "Sure"
     assert_includes config[:instructions], "stage of life"
   end
 end
