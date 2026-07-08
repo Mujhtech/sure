@@ -35,6 +35,45 @@ RSpec.describe 'API V1 Merchants', type: :request do
 
   let!(:family_merchant) { family.merchants.create!(name: 'Coffee Shop') }
 
+  describe 'JSON merchant writes' do
+    let(:headers) { { 'X-Api-Key' => api_key.plain_key } }
+
+    it 'preserves the supplied color when creating a merchant' do
+      post '/api/v1/merchants',
+           params: {
+             merchant: {
+               name: 'Blue Bottle',
+               color: '#6471eb',
+               website_url: 'https://bluebottlecoffee.com'
+             }
+           },
+           headers: headers,
+           as: :json
+
+      expect(response).to have_http_status(:created)
+      body = JSON.parse(response.body)
+      expect(body['color']).to eq('#6471eb')
+      expect(family.merchants.find_by!(name: 'Blue Bottle').color).to eq('#6471eb')
+    end
+
+    it 'preserves the supplied color when updating a merchant' do
+      patch "/api/v1/merchants/#{family_merchant.id}",
+            params: {
+              merchant: {
+                name: family_merchant.name,
+                color: '#61c9ea'
+              }
+            },
+            headers: headers,
+            as: :json
+
+      expect(response).to have_http_status(:ok)
+      body = JSON.parse(response.body)
+      expect(body['color']).to eq('#61c9ea')
+      expect(family_merchant.reload.color).to eq('#61c9ea')
+    end
+  end
+
   path '/api/v1/merchants' do
     get 'List merchants' do
       tags 'Merchants'
