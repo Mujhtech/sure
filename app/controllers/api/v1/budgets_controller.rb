@@ -10,6 +10,7 @@ class Api::V1::BudgetsController < Api::V1::BaseController
   def index
     budgets_query = apply_filters(budgets_scope).order(start_date: :desc)
     @per_page = safe_per_page_param
+    @currency = current_resource_owner.family.currency
 
     @pagy, @budgets = pagy(
       budgets_query,

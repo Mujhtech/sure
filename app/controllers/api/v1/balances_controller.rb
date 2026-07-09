@@ -10,6 +10,7 @@ class Api::V1::BalancesController < Api::V1::BaseController
   def index
     balances_query = apply_filters(balances_scope).order(date: :desc, created_at: :desc)
     @per_page = safe_per_page_param
+    @currency = balances_response_currency
 
     @pagy, @balances = pagy(
       balances_query,
@@ -64,6 +65,16 @@ class Api::V1::BalancesController < Api::V1::BaseController
       query = query.where("balances.date >= ?", parse_date_param(:start_date)) if params[:start_date].present?
       query = query.where("balances.date <= ?", parse_date_param(:end_date)) if params[:end_date].present?
       query
+    end
+
+    def balances_response_currency
+      return current_resource_owner.family.currency if params[:account_id].blank?
+
+      current_resource_owner.family
+        .accounts
+        .accessible_by(current_resource_owner)
+        .find_by(id: params[:account_id])
+        &.currency
     end
 
     def format_money(money)

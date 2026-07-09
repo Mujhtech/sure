@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+json.currency @family_currency
+
 json.transactions @transactions do |transaction|
   json.partial! "transaction", transaction: transaction
 end

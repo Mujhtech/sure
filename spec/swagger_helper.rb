@@ -2002,8 +2002,9 @@ RSpec.configure do |config|
           },
           BudgetCollection: {
             type: :object,
-            required: %w[budgets pagination],
+            required: %w[currency budgets pagination],
             properties: {
+              currency: { type: :string, description: 'Family primary currency' },
               budgets: {
                 type: :array,
                 items: { '$ref' => '#/components/schemas/BudgetSummary' }
@@ -2148,8 +2149,9 @@ RSpec.configure do |config|
           },
           BalanceCollection: {
             type: :object,
-            required: %w[balances pagination],
+            required: %w[currency balances pagination],
             properties: {
+              currency: { type: :string, nullable: true, description: 'Family primary currency, or account currency when filtering by account_id' },
               balances: {
                 type: :array,
                 items: { '$ref' => '#/components/schemas/Balance' }
@@ -3142,8 +3144,9 @@ RSpec.configure do |config|
           },
           TransactionCollection: {
             type: :object,
-            required: %w[transactions pagination],
+            required: %w[currency transactions pagination],
             properties: {
+              currency: { type: :string, description: 'Family primary currency used by converted_amount_cents' },
               transactions: {
                 type: :array,
                 items: { '$ref' => '#/components/schemas/Transaction' }

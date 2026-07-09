@@ -53,6 +53,7 @@ class Api::V1::BalancesControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     response_data = JSON.parse(response.body)
+    assert_equal @family.currency, response_data["currency"]
     assert response_data.key?("balances")
     assert response_data.key?("pagination")
     assert_includes response_data["balances"].map { |balance| balance["id"] }, @balance.id
@@ -120,6 +121,7 @@ class Api::V1::BalancesControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     response_data = JSON.parse(response.body)
+    assert_equal @account.currency, response_data["currency"]
     assert_includes response_data["balances"].map { |balance| balance["id"] }, @balance.id
   end
 

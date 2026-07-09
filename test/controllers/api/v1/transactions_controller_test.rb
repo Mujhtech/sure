@@ -39,6 +39,7 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     response_data = JSON.parse(response.body)
+    assert_equal @family.currency, response_data["currency"]
     assert response_data.key?("transactions")
     assert response_data.key?("pagination")
 
@@ -81,6 +82,7 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     response_data = JSON.parse(response.body)
+    assert_equal "NGN", response_data["currency"]
     transaction = response_data.fetch("transactions").find { |txn| txn["id"] == entry.transaction.id }
 
     assert_not_nil transaction

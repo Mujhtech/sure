@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+json.currency @currency
+
 json.balances @balances do |balance|
   json.partial! "balance", balance: balance
 end
