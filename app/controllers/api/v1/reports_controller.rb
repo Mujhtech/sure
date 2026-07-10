@@ -216,13 +216,13 @@ class Api::V1::ReportsController < Api::V1::BaseController
       grouped_data = grouped_transaction_breakdown
       sort_logic = breakdown_sort_logic
 
-      grouped_data.values.map do |parent_data|
+      grouped_data.values.sort_by(&sort_logic).map do |parent_data|
         subcategories = parent_data[:subcategories].values.sort_by(&sort_logic).map do |subcategory|
           breakdown_category_payload(subcategory)
         end
 
         breakdown_category_payload(parent_data).merge(subcategories: subcategories)
-      end.sort_by { |item| sort_value_for_payload(item) }
+      end
     end
 
     def grouped_transaction_breakdown
@@ -462,14 +462,6 @@ class Api::V1::ReportsController < Api::V1::BaseController
         value = sort_by == "count" ? item[:count] : item[:total]
         sort_direction == "asc" ? value : -value
       end
-    end
-
-    def sort_value_for_payload(item)
-      sort_by = SORT_COLUMNS.include?(params[:sort_by]) ? params[:sort_by] : "amount"
-      sort_direction = SORT_DIRECTIONS.include?(params[:sort_direction]) ? params[:sort_direction] : "desc"
-      value = sort_by == "count" ? item[:count] : BigDecimal(item.dig(:total, :amount).to_s)
-
-      sort_direction == "asc" ? value : -value
     end
 
     def breakdown_category_payload(item)
