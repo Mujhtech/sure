@@ -31,9 +31,24 @@ json.data do
     json.tags_col_label @import.tags_col_label
     json.notes_col_label @import.notes_col_label
     json.account_col_label @import.account_col_label
+    json.qty_col_label @import.qty_col_label
+    json.ticker_col_label @import.ticker_col_label
+    json.price_col_label @import.price_col_label
+    json.entity_type_col_label @import.entity_type_col_label
+    json.currency_col_label @import.currency_col_label
+    json.exchange_operating_mic_col_label @import.exchange_operating_mic_col_label
     json.date_format @import.date_format
     json.number_format @import.number_format
     json.signage_convention @import.signage_convention
+    json.col_sep @import.col_sep
+    json.amount_type_strategy @import.amount_type_strategy
+    json.amount_type_identifier_value @import.amount_type_identifier_value
+    json.amount_type_inflow_value @import.amount_type_inflow_value
+    json.rows_to_skip @import.rows_to_skip
+  end
+
+  if @import.uploaded? && @import.requires_csv_workflow?
+    json.csv_headers @import.csv_headers
   end
 
   json.stats do
