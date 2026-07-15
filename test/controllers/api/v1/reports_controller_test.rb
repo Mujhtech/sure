@@ -74,6 +74,7 @@ class Api::V1::ReportsControllerTest < ActionDispatch::IntegrationTest
     assert response_data.key?("net_worth")
     assert response_data.key?("transactions_breakdown")
     assert response_data.key?("investments")
+    refute response_data.key?("monthly_dump")
 
     grocery_row = response_data["transactions_breakdown"].find { |row| row["category_name"] == "API Groceries" }
     assert_not_nil grocery_row

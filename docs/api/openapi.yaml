@@ -3661,9 +3661,13 @@ components:
     BudgetCollection:
       type: object
       required:
+      - currency
       - budgets
       - pagination
       properties:
+        currency:
+          type: string
+          description: Family primary currency
         budgets:
           type: array
           items:
@@ -3701,6 +3705,22 @@ components:
         display_budgeted_spending:
           type: string
         display_budgeted_spending_cents:
+          type: integer
+        actual_spending:
+          type: string
+        actual_spending_cents:
+          type: integer
+        available_to_spend:
+          type: string
+        available_to_spend_cents:
+          type: integer
+        avg_monthly_expense:
+          type: string
+        avg_monthly_expense_cents:
+          type: integer
+        median_monthly_expense:
+          type: string
+        median_monthly_expense_cents:
           type: integer
         category:
           type: object
@@ -3768,6 +3788,14 @@ components:
         available_to_spend:
           type: string
         available_to_spend_cents:
+          type: integer
+        avg_monthly_expense:
+          type: string
+        avg_monthly_expense_cents:
+          type: integer
+        median_monthly_expense:
+          type: string
+        median_monthly_expense_cents:
           type: integer
         category:
           type: object
@@ -3939,9 +3967,15 @@ components:
     BalanceCollection:
       type: object
       required:
+      - currency
       - balances
       - pagination
       properties:
+        currency:
+          type: string
+          nullable: true
+          description: Family primary currency, or account currency when filtering
+            by account_id
         balances:
           type: array
           items:
@@ -5657,6 +5691,12 @@ components:
           type: integer
         signed_amount_cents:
           type: integer
+        converted_amount_cents:
+          type: integer
+          description: Signed amount converted to family primary currency minor units
+        converted_currency:
+          type: string
+          description: Family primary currency used for converted_amount_cents
         currency:
           type: string
         name:
@@ -5708,9 +5748,13 @@ components:
     TransactionCollection:
       type: object
       required:
+      - currency
       - transactions
       - pagination
       properties:
+        currency:
+          type: string
+          description: Family primary currency used by converted_amount_cents
         transactions:
           type: array
           items:
@@ -5805,6 +5849,20 @@ components:
           - liability_payment
           - loan_payment
         notes:
+          type: string
+          nullable: true
+        source_fee_amount:
+          type: string
+          nullable: true
+          description: Fee charged to the source account
+        source_fee_currency:
+          type: string
+          nullable: true
+        destination_fee_amount:
+          type: string
+          nullable: true
+          description: Fee deducted from the destination account
+        destination_fee_currency:
           type: string
           nullable: true
         inflow_transaction:
@@ -8883,6 +8941,276 @@ components:
               type: string
         series:
           "$ref": "#/components/schemas/TimeSeries"
+    MonthlyDumpResponse:
+      type: object
+      required:
+      - currency
+      - period
+      - summary
+      - activity
+      - categories
+      - net_worth
+      - budget
+      - goal
+      - investments
+      - persona
+      properties:
+        currency:
+          type: string
+        period:
+          type: object
+          required:
+          - month
+          - label
+          - year
+          - start_date
+          - end_date
+          - complete
+          properties:
+            month:
+              type: string
+              pattern: "^\\d{4}-(0[1-9]|1[0-2])$"
+            label:
+              type: string
+            year:
+              type: integer
+            start_date:
+              type: string
+              format: date
+            end_date:
+              type: string
+              format: date
+            complete:
+              type: boolean
+              enum:
+              - true
+        summary:
+          type: object
+          required:
+          - income
+          - expenses
+          - net_savings
+          - savings_rate
+          - income_change_percent
+          - expense_change_percent
+          properties:
+            income:
+              "$ref": "#/components/schemas/Money"
+            expenses:
+              "$ref": "#/components/schemas/Money"
+            net_savings:
+              "$ref": "#/components/schemas/Money"
+            savings_rate:
+              type: number
+            income_change_percent:
+              type: number
+            expense_change_percent:
+              type: number
+        activity:
+          type: object
+          required:
+          - tracked_days
+          - transaction_count
+          - no_spend_days
+          - average_daily_spend
+          - busiest_day
+          - biggest_expense
+          - active_recurring_count
+          properties:
+            tracked_days:
+              type: integer
+              minimum: 28
+              maximum: 31
+            transaction_count:
+              type: integer
+              minimum: 0
+            no_spend_days:
+              type: integer
+              minimum: 0
+            average_daily_spend:
+              "$ref": "#/components/schemas/Money"
+            busiest_day:
+              type: object
+              nullable: true
+              required:
+              - date
+              - label
+              - transaction_count
+              - total_spend
+              properties:
+                date:
+                  type: string
+                  format: date
+                label:
+                  type: string
+                transaction_count:
+                  type: integer
+                  minimum: 1
+                total_spend:
+                  "$ref": "#/components/schemas/Money"
+            biggest_expense:
+              type: object
+              nullable: true
+              required:
+              - name
+              - date
+              - amount
+              - category_name
+              - category_icon
+              properties:
+                name:
+                  type: string
+                date:
+                  type: string
+                  format: date
+                amount:
+                  "$ref": "#/components/schemas/Money"
+                category_name:
+                  type: string
+                  nullable: true
+                category_icon:
+                  type: string
+                  nullable: true
+            active_recurring_count:
+              type: integer
+              minimum: 0
+        categories:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            required:
+            - category_name
+            - category_color
+            - category_icon
+            - count
+            - total
+            properties:
+              category_name:
+                type: string
+              category_color:
+                type: string
+                nullable: true
+              category_icon:
+                type: string
+                nullable: true
+              count:
+                type: integer
+                minimum: 1
+              total:
+                "$ref": "#/components/schemas/Money"
+        net_worth:
+          type: object
+          required:
+          - current_net_worth
+          - total_assets
+          - total_liabilities
+          - change_percent
+          properties:
+            current_net_worth:
+              "$ref": "#/components/schemas/Money"
+            total_assets:
+              "$ref": "#/components/schemas/Money"
+            total_liabilities:
+              "$ref": "#/components/schemas/Money"
+            change_percent:
+              type: number
+              nullable: true
+        budget:
+          type: object
+          nullable: true
+          required:
+          - progress
+          - progress_text
+          - status
+          - spent
+          - target
+          properties:
+            progress:
+              type: number
+              minimum: 0
+            progress_text:
+              type: string
+            status:
+              type: string
+            spent:
+              "$ref": "#/components/schemas/Money"
+            target:
+              "$ref": "#/components/schemas/Money"
+        goal:
+          type: object
+          nullable: true
+          required:
+          - name
+          - progress
+          - progress_text
+          - current_balance
+          - target_amount
+          properties:
+            name:
+              type: string
+            progress:
+              type: number
+              minimum: 0
+              maximum: 1
+            progress_text:
+              type: string
+            current_balance:
+              "$ref": "#/components/schemas/Money"
+            target_amount:
+              "$ref": "#/components/schemas/Money"
+        investments:
+          type: object
+          required:
+          - has_investments
+          - contributions
+          - trades_count
+          properties:
+            has_investments:
+              type: boolean
+            contributions:
+              "$ref": "#/components/schemas/Money"
+            trades_count:
+              type: integer
+              minimum: 0
+        persona:
+          type: object
+          required:
+          - key
+          - title
+          - headline
+          - description
+          - closing_line
+          - symbol
+          - source
+          properties:
+            key:
+              type: string
+              enum:
+              - investor
+              - achiever
+              - planner
+              - builder
+              - steward
+              - explorer
+            title:
+              type: string
+            headline:
+              type: string
+              maxLength: 56
+            description:
+              type: string
+              maxLength: 130
+            closing_line:
+              type: string
+              maxLength: 48
+            symbol:
+              type: string
+            source:
+              type: string
+              enum:
+              - ai
+              - rules
     ReportResponse:
       type: object
       required:
@@ -9109,6 +9437,8 @@ components:
       - net_worth
       - assets
       - liabilities
+      - asset_groups
+      - liability_groups
       properties:
         currency:
           type: string
@@ -9119,6 +9449,78 @@ components:
           "$ref": "#/components/schemas/Money"
         liabilities:
           "$ref": "#/components/schemas/Money"
+        asset_groups:
+          type: array
+          items:
+            "$ref": "#/components/schemas/BalanceSheetAccountGroup"
+        liability_groups:
+          type: array
+          items:
+            "$ref": "#/components/schemas/BalanceSheetAccountGroup"
+    BalanceSheetAccountGroup:
+      type: object
+      required:
+      - name
+      - account_type
+      - classification
+      - total
+      - weight
+      - accounts
+      properties:
+        name:
+          type: string
+        color:
+          type: string
+          nullable: true
+        account_type:
+          type: string
+        classification:
+          type: string
+          enum:
+          - asset
+          - liability
+        total:
+          "$ref": "#/components/schemas/Money"
+        weight:
+          type: number
+        accounts:
+          type: array
+          items:
+            "$ref": "#/components/schemas/BalanceSheetAccount"
+    BalanceSheetAccount:
+      type: object
+      required:
+      - id
+      - name
+      - currency
+      - balance
+      - converted_balance
+      - classification
+      - account_type
+      - weight
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        currency:
+          type: string
+          description: Account native currency
+        balance:
+          "$ref": "#/components/schemas/Money"
+        converted_balance:
+          "$ref": "#/components/schemas/Money"
+          description: Account balance converted to the family primary currency
+        classification:
+          type: string
+          enum:
+          - asset
+          - liability
+        account_type:
+          type: string
+        weight:
+          type: number
     SuccessMessage:
       type: object
       required:
@@ -11525,6 +11927,13 @@ paths:
           format: date
         description: Filter budget categories whose budget ends on or before this
           date
+      - name: include_derived_amounts
+        in: query
+        required: false
+        schema:
+          type: boolean
+        description: Include actual spending, remaining budget, and historical average/median
+          amounts
       responses:
         '200':
           description: budget categories listed
@@ -11942,12 +12351,11 @@ paths:
                   example: Monthly budget review
                 message:
                   type: string
-                  description: Optional initial message in the chat
+                  description: Optional initial message in the chat. When title is
+                    omitted, the server generates the title from this message.
                 model:
                   type: string
                   description: Optional OpenAI model identifier
-              required:
-              - title
         required: true
   "/api/v1/chats/{id}":
     parameters:
@@ -16505,6 +16913,44 @@ paths:
                 "$ref": "#/components/schemas/ErrorResponse"
         '404':
           description: not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+  "/api/v1/monthly_dump":
+    get:
+      summary: Show a completed Monthly Dump
+      tags:
+      - Monthly Dump
+      description: Returns a ten-slide-ready recap for a completed calendar month.
+        Defaults to the latest completed month and includes privacy-safe AI-refined
+        archetype copy with a deterministic fallback.
+      security:
+      - apiKeyAuth: []
+      parameters:
+      - name: month
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: "^\\d{4}-(0[1-9]|1[0-2])$"
+        description: Completed calendar month in YYYY-MM format. Defaults to the previous
+          month.
+      responses:
+        '200':
+          description: monthly dump returned
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/MonthlyDumpResponse"
+        '401':
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          description: month is incomplete or malformed
           content:
             application/json:
               schema:

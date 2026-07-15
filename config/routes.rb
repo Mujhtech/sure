@@ -166,6 +166,7 @@ Rails.application.routes.draw do
   end
   get ".well-known/oauth-protected-resource", to: "oauth_metadata#protected_resource"
   get ".well-known/oauth-authorization-server", to: "oauth_metadata#authorization_server"
+  get ".well-known/assetlinks.json", to: "android_asset_links#show"
   post "register", to: "oauth_registration#create"
   use_doorkeeper
   # MFA routes
@@ -697,6 +698,7 @@ Rails.application.routes.draw do
       resource :reports, only: [ :show ], controller: :reports do
         get :export_transactions
       end
+      resource :monthly_dump, only: [ :show ], controller: :monthly_dumps
       resource :family_settings, only: [ :show, :update ], controller: :family_settings
       resource :preferences, only: [ :show, :update ], controller: :preferences
       resource :hosting, only: [ :show, :update ], controller: :hosting do

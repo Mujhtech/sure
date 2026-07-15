@@ -290,28 +290,32 @@ class Api::V1::ReportsController < Api::V1::BaseController
     end
 
     def report_transactions
-      scope = Transaction
-        .joins(:entry)
-        .joins(entry: :account)
-        .where(accounts: { family_id: family.id, status: Account::VISIBLE_STATUSES })
-        .merge(Account.included_in_reports)
-        .where(entries: { entryable_type: "Transaction", excluded: false, date: @period.date_range })
-        .where.not(kind: Transaction::BUDGET_EXCLUDED_KINDS)
-        .includes(entry: :account, category: :parent)
+      @report_transactions ||= begin
+        scope = Transaction
+          .joins(:entry)
+          .joins(entry: :account)
+          .where(accounts: { family_id: family.id, status: Account::VISIBLE_STATUSES })
+          .merge(Account.included_in_reports)
+          .where(entries: { entryable_type: "Transaction", excluded: false, date: @period.date_range })
+          .where.not(kind: Transaction::BUDGET_EXCLUDED_KINDS)
+          .includes(entry: :account, category: :parent)
 
-      apply_transaction_filters(scope)
+        apply_transaction_filters(scope)
+      end
     end
 
     def report_trades
-      scope = Trade
-        .joins(:entry)
-        .joins(entry: :account)
-        .where(accounts: { family_id: family.id, status: Account::VISIBLE_STATUSES })
-        .merge(Account.included_in_reports)
-        .where(entries: { entryable_type: "Trade", excluded: false, date: @period.date_range })
-        .includes(entry: :account, category: :parent)
+      @report_trades ||= begin
+        scope = Trade
+          .joins(:entry)
+          .joins(entry: :account)
+          .where(accounts: { family_id: family.id, status: Account::VISIBLE_STATUSES })
+          .merge(Account.included_in_reports)
+          .where(entries: { entryable_type: "Trade", excluded: false, date: @period.date_range })
+          .includes(entry: :account, category: :parent)
 
-      apply_entry_filters(scope)
+        apply_entry_filters(scope)
+      end
     end
 
     def monthly_transaction_breakdown_for_export

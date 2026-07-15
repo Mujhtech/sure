@@ -4941,6 +4941,142 @@ RSpec.configure do |config|
               series: { '$ref' => '#/components/schemas/TimeSeries' }
             }
           },
+          MonthlyDumpResponse: {
+            type: :object,
+            required: %w[currency period summary activity categories net_worth budget goal investments persona],
+            properties: {
+              currency: { type: :string },
+              period: {
+                type: :object,
+                required: %w[month label year start_date end_date complete],
+                properties: {
+                  month: { type: :string, pattern: '^\d{4}-(0[1-9]|1[0-2])$' },
+                  label: { type: :string },
+                  year: { type: :integer },
+                  start_date: { type: :string, format: :date },
+                  end_date: { type: :string, format: :date },
+                  complete: { type: :boolean, enum: [ true ] }
+                }
+              },
+              summary: {
+                type: :object,
+                required: %w[income expenses net_savings savings_rate income_change_percent expense_change_percent],
+                properties: {
+                  income: { '$ref' => '#/components/schemas/Money' },
+                  expenses: { '$ref' => '#/components/schemas/Money' },
+                  net_savings: { '$ref' => '#/components/schemas/Money' },
+                  savings_rate: { type: :number },
+                  income_change_percent: { type: :number },
+                  expense_change_percent: { type: :number }
+                }
+              },
+              activity: {
+                type: :object,
+                required: %w[tracked_days transaction_count no_spend_days average_daily_spend busiest_day biggest_expense active_recurring_count],
+                properties: {
+                  tracked_days: { type: :integer, minimum: 28, maximum: 31 },
+                  transaction_count: { type: :integer, minimum: 0 },
+                  no_spend_days: { type: :integer, minimum: 0 },
+                  average_daily_spend: { '$ref' => '#/components/schemas/Money' },
+                  busiest_day: {
+                    type: :object,
+                    nullable: true,
+                    required: %w[date label transaction_count total_spend],
+                    properties: {
+                      date: { type: :string, format: :date },
+                      label: { type: :string },
+                      transaction_count: { type: :integer, minimum: 1 },
+                      total_spend: { '$ref' => '#/components/schemas/Money' }
+                    }
+                  },
+                  biggest_expense: {
+                    type: :object,
+                    nullable: true,
+                    required: %w[name date amount category_name category_icon],
+                    properties: {
+                      name: { type: :string },
+                      date: { type: :string, format: :date },
+                      amount: { '$ref' => '#/components/schemas/Money' },
+                      category_name: { type: :string, nullable: true },
+                      category_icon: { type: :string, nullable: true }
+                    }
+                  },
+                  active_recurring_count: { type: :integer, minimum: 0 }
+                }
+              },
+              categories: {
+                type: :array,
+                maxItems: 3,
+                items: {
+                  type: :object,
+                  required: %w[category_name category_color category_icon count total],
+                  properties: {
+                    category_name: { type: :string },
+                    category_color: { type: :string, nullable: true },
+                    category_icon: { type: :string, nullable: true },
+                    count: { type: :integer, minimum: 1 },
+                    total: { '$ref' => '#/components/schemas/Money' }
+                  }
+                }
+              },
+              net_worth: {
+                type: :object,
+                required: %w[current_net_worth total_assets total_liabilities change_percent],
+                properties: {
+                  current_net_worth: { '$ref' => '#/components/schemas/Money' },
+                  total_assets: { '$ref' => '#/components/schemas/Money' },
+                  total_liabilities: { '$ref' => '#/components/schemas/Money' },
+                  change_percent: { type: :number, nullable: true }
+                }
+              },
+              budget: {
+                type: :object,
+                nullable: true,
+                required: %w[progress progress_text status spent target],
+                properties: {
+                  progress: { type: :number, minimum: 0 },
+                  progress_text: { type: :string },
+                  status: { type: :string },
+                  spent: { '$ref' => '#/components/schemas/Money' },
+                  target: { '$ref' => '#/components/schemas/Money' }
+                }
+              },
+              goal: {
+                type: :object,
+                nullable: true,
+                required: %w[name progress progress_text current_balance target_amount],
+                properties: {
+                  name: { type: :string },
+                  progress: { type: :number, minimum: 0, maximum: 1 },
+                  progress_text: { type: :string },
+                  current_balance: { '$ref' => '#/components/schemas/Money' },
+                  target_amount: { '$ref' => '#/components/schemas/Money' }
+                }
+              },
+              investments: {
+                type: :object,
+                required: %w[has_investments contributions trades_count],
+                properties: {
+                  has_investments: { type: :boolean },
+                  contributions: { '$ref' => '#/components/schemas/Money' },
+                  trades_count: { type: :integer, minimum: 0 }
+                }
+              },
+              persona: {
+                type: :object,
+                required: %w[key title headline description closing_line symbol source],
+                properties: {
+                  key: { type: :string, enum: %w[investor achiever planner builder steward explorer] },
+                  title: { type: :string },
+                  headline: { type: :string, maxLength: 56 },
+                  description: { type: :string, maxLength: 130 },
+                  closing_line: { type: :string, maxLength: 48 },
+                  symbol: { type: :string },
+                  source: { type: :string, enum: %w[ai rules] }
+                }
+              }
+            }
+          },
           ReportResponse: {
             type: :object,
             required: %w[currency period summary trends net_worth transactions_breakdown investments],
