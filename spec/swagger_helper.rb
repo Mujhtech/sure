@@ -44,6 +44,51 @@ RSpec.configure do |config|
               total_pages: { type: :integer, minimum: 0 }
             }
           },
+          SavingsChallengeCampaign: {
+            type: :object,
+            required: %w[id name short_description start_date end_date duration_days phase days_remaining],
+            properties: {
+              id: { type: :string },
+              name: { type: :string },
+              short_description: { type: :string },
+              start_date: { type: :string, format: :date },
+              end_date: { type: :string, format: :date },
+              duration_days: { type: :integer, minimum: 1 },
+              phase: { type: :string, enum: %w[upcoming active ended] },
+              day_number: { type: :integer, minimum: 1, nullable: true },
+              days_remaining: { type: :integer, minimum: 0 }
+            }
+          },
+          SavingsChallengeEnrollment: {
+            type: :object,
+            required: %w[id goal_id joined_at currency target_amount target_amount_cents starting_balance
+                         starting_balance_cents saved_amount saved_amount_cents progress_percent completed],
+            properties: {
+              id: { type: :string, format: :uuid },
+              goal_id: { type: :string, format: :uuid },
+              joined_at: { type: :string, format: :'date-time' },
+              currency: { type: :string },
+              target_amount: { type: :string },
+              target_amount_cents: { type: :integer },
+              starting_balance: { type: :string },
+              starting_balance_cents: { type: :integer },
+              saved_amount: { type: :string },
+              saved_amount_cents: { type: :integer },
+              progress_percent: { type: :integer, minimum: 0, maximum: 100 },
+              completed: { type: :boolean }
+            }
+          },
+          SavingsChallengeResponse: {
+            type: :object,
+            required: %w[campaign enrollment],
+            properties: {
+              campaign: { '$ref' => '#/components/schemas/SavingsChallengeCampaign' },
+              enrollment: {
+                allOf: [ { '$ref' => '#/components/schemas/SavingsChallengeEnrollment' } ],
+                nullable: true
+              }
+            }
+          },
           FamilyExportFile: {
             type: :object,
             required: %w[attached],

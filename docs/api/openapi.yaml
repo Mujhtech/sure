@@ -37,6 +37,103 @@ components:
         total_pages:
           type: integer
           minimum: 0
+    SavingsChallengeCampaign:
+      type: object
+      required:
+      - id
+      - name
+      - short_description
+      - start_date
+      - end_date
+      - duration_days
+      - phase
+      - days_remaining
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        short_description:
+          type: string
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        duration_days:
+          type: integer
+          minimum: 1
+        phase:
+          type: string
+          enum:
+          - upcoming
+          - active
+          - ended
+        day_number:
+          type: integer
+          minimum: 1
+          nullable: true
+        days_remaining:
+          type: integer
+          minimum: 0
+    SavingsChallengeEnrollment:
+      type: object
+      required:
+      - id
+      - goal_id
+      - joined_at
+      - currency
+      - target_amount
+      - target_amount_cents
+      - starting_balance
+      - starting_balance_cents
+      - saved_amount
+      - saved_amount_cents
+      - progress_percent
+      - completed
+      properties:
+        id:
+          type: string
+          format: uuid
+        goal_id:
+          type: string
+          format: uuid
+        joined_at:
+          type: string
+          format: date-time
+        currency:
+          type: string
+        target_amount:
+          type: string
+        target_amount_cents:
+          type: integer
+        starting_balance:
+          type: string
+        starting_balance_cents:
+          type: integer
+        saved_amount:
+          type: string
+        saved_amount_cents:
+          type: integer
+        progress_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        completed:
+          type: boolean
+    SavingsChallengeResponse:
+      type: object
+      required:
+      - campaign
+      - enrollment
+      properties:
+        campaign:
+          "$ref": "#/components/schemas/SavingsChallengeCampaign"
+        enrollment:
+          allOf:
+          - "$ref": "#/components/schemas/SavingsChallengeEnrollment"
+          nullable: true
     FamilyExportFile:
       type: object
       required:
@@ -19849,6 +19946,55 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/RuleResponse"
+  "/api/v1/savings_challenge":
+    get:
+      summary: Retrieve the 30-Day Savings Challenge
+      tags:
+      - Savings Challenge
+      security:
+      - apiKeyAuth: []
+      responses:
+        '200':
+          description: challenge retrieved
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SavingsChallengeResponse"
+    post:
+      summary: Join the 30-Day Savings Challenge
+      tags:
+      - Savings Challenge
+      security:
+      - apiKeyAuth: []
+      parameters: []
+      responses:
+        '201':
+          description: challenge joined
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SavingsChallengeResponse"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - challenge
+              properties:
+                challenge:
+                  type: object
+                  required:
+                  - target_amount
+                  - account_id
+                  properties:
+                    target_amount:
+                      type: number
+                      exclusiveMinimum: 0
+                    account_id:
+                      type: string
+                      format: uuid
+        required: true
   "/api/v1/securities":
     get:
       summary: List securities referenced by family investment data

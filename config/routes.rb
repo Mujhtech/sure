@@ -167,6 +167,7 @@ Rails.application.routes.draw do
   get ".well-known/oauth-protected-resource", to: "oauth_metadata#protected_resource"
   get ".well-known/oauth-authorization-server", to: "oauth_metadata#authorization_server"
   get ".well-known/assetlinks.json", to: "android_asset_links#show"
+  get ".well-known/apple-app-site-association", to: "apple_app_site_associations#show"
   post "register", to: "oauth_registration#create"
   use_doorkeeper
   # MFA routes
@@ -652,6 +653,9 @@ Rails.application.routes.draw do
           patch :renew, on: :member
         end
       end
+      resource :savings_challenge,
+               only: [ :show, :create ],
+               controller: :savings_challenges
       resources :family_exports, only: [ :index, :show, :create, :destroy ] do
         get :download, on: :member
       end

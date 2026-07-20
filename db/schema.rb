@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.2].define(version: 2026_07_03_140000) do
+ActiveRecord::Schema[7.2].define(version: 2026_07_19_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pgcrypto"
   enable_extension "plpgsql"
@@ -1639,6 +1639,22 @@ ActiveRecord::Schema[7.2].define(version: 2026_07_03_140000) do
     t.index ["family_id"], name: "index_rules_on_family_id"
   end
 
+  create_table "savings_challenge_enrollments", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "family_id", null: false
+    t.uuid "goal_id", null: false
+    t.string "campaign_key", null: false
+    t.decimal "target_amount", precision: 19, scale: 4, null: false
+    t.decimal "starting_balance", precision: 19, scale: 4, default: "0.0", null: false
+    t.datetime "joined_at", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["family_id", "campaign_key"], name: "index_savings_challenge_enrollments_on_family_and_campaign", unique: true
+    t.index ["family_id"], name: "index_savings_challenge_enrollments_on_family_id"
+    t.index ["goal_id"], name: "index_savings_challenge_enrollments_on_goal_id", unique: true
+    t.check_constraint "starting_balance >= 0::numeric", name: "chk_savings_challenge_starting_balance_nonnegative"
+    t.check_constraint "target_amount > 0::numeric", name: "chk_savings_challenge_target_amount_positive"
+  end
+
   create_table "securities", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.string "ticker", null: false
     t.string "name"
@@ -2243,6 +2259,8 @@ ActiveRecord::Schema[7.2].define(version: 2026_07_03_140000) do
   add_foreign_key "rule_conditions", "rules"
   add_foreign_key "rule_runs", "rules"
   add_foreign_key "rules", "families"
+  add_foreign_key "savings_challenge_enrollments", "families"
+  add_foreign_key "savings_challenge_enrollments", "goals"
   add_foreign_key "security_prices", "securities"
   add_foreign_key "sessions", "impersonation_sessions", column: "active_impersonator_session_id"
   add_foreign_key "sessions", "users"
