@@ -11,10 +11,10 @@ class Api::V1::ImportsController < Api::V1::BaseController
   }.freeze
 
   # Ensure proper scope authorization
-  before_action :ensure_read_scope, only: [ :index, :show, :rows, :qif_category_selection, :preflight, :sample_csv ]
+  before_action :ensure_read_scope, only: [ :index, :show, :rows, :mappings, :qif_category_selection, :preflight, :sample_csv ]
   before_action :ensure_write_scope, only: [ :create, :update, :update_configuration, :apply_template, :update_row, :update_mapping, :update_qif_category_selection, :publish, :revert, :destroy ]
   before_action :set_import_with_rows, only: [ :show ]
-  before_action :set_import, only: [ :rows, :update, :update_configuration, :apply_template, :update_row, :update_mapping, :qif_category_selection, :update_qif_category_selection, :publish, :revert, :destroy, :sample_csv ]
+  before_action :set_import, only: [ :rows, :mappings, :update, :update_configuration, :apply_template, :update_row, :update_mapping, :qif_category_selection, :update_qif_category_selection, :publish, :revert, :destroy, :sample_csv ]
   before_action :ensure_qif_import, only: [ :qif_category_selection, :update_qif_category_selection ]
   before_action :ensure_import_write_permission, only: [ :update, :update_configuration, :apply_template, :update_row, :update_mapping, :update_qif_category_selection, :publish, :revert, :destroy ]
 
@@ -95,6 +95,13 @@ class Api::V1::ImportsController < Api::V1::BaseController
   rescue StandardError => e
     Rails.logger.error "ImportsController#rows error: #{e.message}"
     render json: { error: "internal_server_error", message: "An unexpected error occurred." }, status: :internal_server_error
+  end
+
+  def mappings
+    render json: { data: import_mappings_payload(@import) }
+  rescue StandardError => e
+    Rails.logger.error "ImportsController#mappings error: #{e.message}"
+    render json: { error: "internal_server_error", message: "Import mappings could not be loaded." }, status: :internal_server_error
   end
 
   def sample_csv
@@ -685,9 +692,47 @@ class Api::V1::ImportsController < Api::V1::BaseController
         key: mapping.key,
         type: mapping.type,
         value: mapping.value,
+        values_count: mapping.values_count,
+        requires_selection: mapping.requires_selection?,
         create_when_empty: mapping.create_when_empty,
         creatable: mapping.creatable?,
         mappable: import_mapping_mappable_payload(mapping)
+      }
+    end
+
+    def import_mappings_payload(import)
+      {
+        import_id: import.id,
+        steps: import.mapping_steps.map { |mapping_class| import_mapping_step_payload(import, mapping_class) },
+        summary: import_mapping_confirmation_summary(import)
+      }
+    end
+
+    def import_mapping_step_payload(import, mapping_class)
+      {
+        type: mapping_class.name,
+        resource_kind: import_mapping_resource_kind(mapping_class),
+        source_label: import_mapping_label(mapping_class),
+        target_label: "#{import_mapping_label(mapping_class)} in Sure",
+        mappings: mapping_class.for_import(import).includes(:mappable).sort_by { |mapping| mapping.key.to_s.downcase }.map do |mapping|
+          import_mapping_payload(mapping)
+        end
+      }
+    end
+
+    def import_mapping_resource_kind(mapping_class)
+      mapping_class.name.demodulize.delete_suffix("Mapping").underscore
+    end
+
+    def import_mapping_label(mapping_class)
+      import_mapping_resource_kind(mapping_class).humanize
+    end
+
+    def import_mapping_confirmation_summary(import)
+      {
+        transactions_count: import.rows_count,
+        categories_count: import.mappings.categories.creational.count,
+        tags_count: import.mappings.tags.creational.count
       }
     end
 

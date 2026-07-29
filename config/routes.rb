@@ -687,6 +687,7 @@ Rails.application.routes.draw do
           patch :qif_category_selection, action: :update_qif_category_selection
           get :sample_csv
           get :rows
+          get :mappings
           patch "rows/:row_id", action: :update_row, as: :row
           patch "mappings/:mapping_id", action: :update_mapping, as: :mapping
           post :publish
