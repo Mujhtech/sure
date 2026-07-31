@@ -25,6 +25,24 @@ class Api::V1::HoldingsControllerTest < ActionDispatch::IntegrationTest
 
     @account = accounts(:investment)
     @holding = holdings(:one)
+
+    # An account owned by another family member, never shared with @user.
+    @other_member = users(:family_member)
+    @private_account = @family.accounts.create!(
+      name: "Member Brokerage",
+      accountable: Investment.new,
+      balance: 5000,
+      currency: "USD",
+      owner: @other_member
+    )
+    @private_holding = @private_account.holdings.create!(
+      security: securities(:msft),
+      date: Date.current,
+      qty: 5,
+      price: 100,
+      amount: 500,
+      currency: "USD"
+    )
   end
 
   test "lists holdings scoped to accessible accounts" do
@@ -33,11 +51,30 @@ class Api::V1::HoldingsControllerTest < ActionDispatch::IntegrationTest
     get api_v1_holdings_url, headers: api_headers(@api_key)
 
     assert_response :success
-    response_data = JSON.parse(response.body)
-    holding_ids = response_data["holdings"].map { |holding| holding["id"] }
-
+    holding_ids = JSON.parse(response.body)["holdings"].map { |holding| holding["id"] }
     assert_includes holding_ids, @holding.id
+    assert_not_includes holding_ids, @private_holding.id
     assert_not_includes holding_ids, other_family_holding.id
+  end
+
+  test "account_ids filter cannot reach inaccessible accounts" do
+    get api_v1_holdings_url,
+        params: { account_ids: [ @private_account.id ] },
+        headers: api_headers(@api_key)
+
+    assert_response :success
+    holding_ids = JSON.parse(response.body)["holdings"].map { |holding| holding["id"] }
+    assert_not_includes holding_ids, @private_holding.id
+  end
+
+  test "account_id filter cannot reach inaccessible accounts" do
+    get api_v1_holdings_url,
+        params: { account_id: @private_account.id },
+        headers: api_headers(@api_key)
+
+    assert_response :success
+    holding_ids = JSON.parse(response.body)["holdings"].map { |holding| holding["id"] }
+    assert_not_includes holding_ids, @private_holding.id
   end
 
   test "shows holding with management flags" do
@@ -185,6 +222,12 @@ class Api::V1::HoldingsControllerTest < ActionDispatch::IntegrationTest
     other_family_holding = create_other_family_holding
 
     get api_v1_holding_url(other_family_holding), headers: api_headers(@api_key)
+
+    assert_response :not_found
+  end
+
+  test "returns not found for an inaccessible holding" do
+    get api_v1_holding_url(@private_holding), headers: api_headers(@api_key)
 
     assert_response :not_found
   end

@@ -9,7 +9,7 @@ class Api::V1::HoldingsController < Api::V1::BaseController
   before_action :set_writable_holding, only: [ :update, :destroy, :unlock_cost_basis, :remap_security, :reset_security, :sync_prices ]
 
   def index
-    holdings_query = readable_holdings_scope
+    holdings_query = accessible_holdings
 
     holdings_query = apply_filters(holdings_query)
     holdings_query = holdings_query.includes(:account, :security).chronological
@@ -166,6 +166,7 @@ class Api::V1::HoldingsController < Api::V1::BaseController
 
   private
 
+<<<<<<< HEAD
     def set_readable_holding
       @holding = find_holding(readable_holdings_scope)
     end
@@ -180,8 +181,25 @@ class Api::V1::HoldingsController < Api::V1::BaseController
       end
 
       scope.find(params[:id])
+=======
+    def set_holding
+      @holding = accessible_holdings.find(params[:id])
+>>>>>>> main
     rescue ActiveRecord::RecordNotFound
       render json: { error: "not_found", message: "Holding not found" }, status: :not_found
+    end
+
+    # Holdings restricted to accounts the token owner can access (owned or shared),
+    # not the whole family. Mirrors Api::V1::BalancesController and the web
+    # HoldingsController, both of which scope through Account.accessible_by.
+    def accessible_holdings
+      Holding
+        .joins(:account)
+        .where(accounts: { status: %w[draft active], id: accessible_account_ids })
+    end
+
+    def accessible_account_ids
+      @accessible_account_ids ||= current_resource_owner.family.accounts.accessible_by(current_resource_owner).select(:id)
     end
 
     def ensure_read_scope
