@@ -91,6 +91,8 @@ x-rails-env: &rails_env
   AI_DEBUG_MODE: "true" # Useful for debugging, set to "false" in production
   # Ollama using OpenAI API compatible endpoints
   OPENAI_ACCESS_TOKEN: token-can-be-any-value-for-ollama
+  ANDROID_APP_PACKAGE_NAME: ${ANDROID_APP_PACKAGE_NAME:-com.mujhtech.northledger}
+  ANDROID_APP_SHA256_CERT_FINGERPRINTS: ${ANDROID_APP_SHA256_CERT_FINGERPRINTS:-}
   OPENAI_MODEL: llama3.1:8b # Note: Use tool-enabled model
   OPENAI_URI_BASE: http://ollama:11434/v1
   # Vector store — pgvector keeps all data local (requires pgvector/pgvector Docker image for db)

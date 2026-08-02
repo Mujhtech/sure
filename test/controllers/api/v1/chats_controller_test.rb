@@ -202,6 +202,72 @@ class Api::V1::ChatsControllerTest < ActionDispatch::IntegrationTest
     assert_not_includes chat_ids, impersonated_chat.id
   end
 
+  test "updates returns all messages when no cursor given" do
+    get "/api/v1/chats/#{@chat.id}/updates", headers: bearer_auth_header(@read_token)
+
+    assert_response :success
+    body = JSON.parse(response.body)
+
+    assert_equal @chat.id, body["id"]
+    assert_equal @chat.messages.count, body["messages"].size
+    assert_includes [ true, false ], body["pending_response"]
+    assert body["server_time"].present?
+    assert_nothing_raised { Time.iso8601(body["server_time"]) }
+  end
+
+  test "updates returns only messages changed since cursor" do
+    cursor = 1.minute.from_now.iso8601(6)
+
+    get "/api/v1/chats/#{@chat.id}/updates", params: { since: cursor }, headers: bearer_auth_header(@read_token)
+    assert_response :success
+    assert_empty JSON.parse(response.body)["messages"]
+
+    new_message = @chat.messages.create!(
+      type: "AssistantMessage", content: "Fresh answer", ai_model: "gpt-4.1", status: :complete
+    )
+    new_message.update_column(:updated_at, 2.minutes.from_now)
+
+    get "/api/v1/chats/#{@chat.id}/updates", params: { since: cursor }, headers: bearer_auth_header(@read_token)
+    assert_response :success
+    body = JSON.parse(response.body)
+
+    assert_equal [ new_message.id ], body["messages"].pluck("id")
+    assert_equal "Fresh answer", body["messages"].first["content"]
+  end
+
+  test "updates includes cursor window inclusively so same-instant changes are not missed" do
+    message = @chat.messages.ordered.last
+    cursor = message.updated_at.iso8601(6)
+
+    get "/api/v1/chats/#{@chat.id}/updates", params: { since: cursor }, headers: bearer_auth_header(@read_token)
+
+    assert_response :success
+    assert_includes JSON.parse(response.body)["messages"].pluck("id"), message.id
+  end
+
+  test "updates reports pending assistant response" do
+    @chat.messages.create!(type: "AssistantMessage", content: "", ai_model: "gpt-4.1", status: :pending)
+
+    get "/api/v1/chats/#{@chat.id}/updates", headers: bearer_auth_header(@read_token)
+
+    assert_response :success
+    assert JSON.parse(response.body)["pending_response"]
+  end
+
+  test "updates rejects malformed since cursor" do
+    get "/api/v1/chats/#{@chat.id}/updates", params: { since: "yesterday-ish" }, headers: bearer_auth_header(@read_token)
+
+    assert_response :unprocessable_entity
+    assert_equal "invalid_since", JSON.parse(response.body)["error"]
+  end
+
+  test "updates requires read scope and chat ownership" do
+    other_chat = chats(:two)
+
+    get "/api/v1/chats/#{other_chat.id}/updates", headers: bearer_auth_header(@read_token)
+    assert_response :not_found
+  end
+
   private
 
     def bearer_auth_header(token)

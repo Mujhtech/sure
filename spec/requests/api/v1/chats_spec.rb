@@ -223,13 +223,57 @@ RSpec.describe 'API V1 Chats', type: :request do
     end
   end
 
+  path '/api/v1/chats/{id}/updates' do
+    parameter name: :id, in: :path, type: :string, required: true, description: 'Chat ID'
+    parameter name: :since, in: :query, type: :string, required: false,
+              description: 'ISO8601 cursor from the previous poll (server_time). Omit to fetch all messages.'
+
+    get 'Poll a chat for updates' do
+      tags 'Chats'
+      description 'Incremental polling endpoint. Returns messages created or updated since the given cursor, ' \
+                  'plus whether an assistant response is still pending. Pass the returned server_time as the ' \
+                  'since parameter on the next poll and upsert messages by id (the window is inclusive).'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      let(:id) { chat.id }
+      let(:since) { nil }
+
+      response '200', 'chat updates returned' do
+        schema '$ref' => '#/components/schemas/ChatUpdates'
+
+        run_test!
+      end
+
+      response '422', 'invalid cursor' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:since) { 'not-a-timestamp' }
+
+        run_test!
+      end
+
+      response '404', 'chat not found' do
+        schema '$ref' => '#/components/schemas/ErrorResponse'
+
+        let(:id) { SecureRandom.uuid }
+
+        run_test!
+      end
+    end
+  end
+
   path '/api/v1/chats/{chat_id}/messages' do
     parameter name: :chat_id, in: :path, type: :string, required: true, description: 'Chat ID'
 
     post 'Create a message' do
       tags 'Chat Messages'
+      description 'Creates a user message and triggers an asynchronous AI response. ' \
+                  'Also accepts multipart/form-data with an optional `file` part (max 25MB): PDFs are queued ' \
+                  'as bank statement imports, other supported documents go to the family document store, and ' \
+                  'the attachment metadata is returned on the message. Provide `content`, `file`, or both.'
       security [ { apiKeyAuth: [] } ]
-      consumes 'application/json'
+      consumes 'application/json', 'multipart/form-data'
       produces 'application/json'
 
       let(:chat_id) { chat.id }
@@ -238,9 +282,9 @@ RSpec.describe 'API V1 Chats', type: :request do
         type: :object,
         properties: {
           content: { type: :string },
-          model: { type: :string }
-        },
-        required: %w[content]
+          model: { type: :string },
+          file: { type: :string, format: :binary, description: 'Optional attachment (multipart/form-data only)' }
+        }
       }
 
       let(:message_params) do
@@ -355,6 +399,39 @@ RSpec.describe 'API V1 Chats', type: :request do
         schema '$ref' => '#/components/schemas/ErrorResponse'
 
         let(:id) { SecureRandom.uuid }
+
+        run_test!
+      end
+    end
+  end
+
+  path '/api/v1/chats/{chat_id}/messages/{id}/attachment' do
+    parameter name: :chat_id, in: :path, type: :string, required: true, description: 'Chat ID'
+    parameter name: :id, in: :path, type: :string, required: true, description: 'Message ID'
+
+    get 'Download a message attachment' do
+      tags 'Chat Messages'
+      description 'Redirects to the attached file. Pass disposition=attachment to force download.'
+      security [ { apiKeyAuth: [] } ]
+      produces 'application/json'
+
+      let(:chat_id) { chat.id }
+
+      response '302', 'redirects to the file' do
+        let(:id) do
+          message = chat.messages.create!(type: 'UserMessage', content: 'see attached', ai_model: 'gpt-4')
+          message.attachment.attach(io: StringIO.new('hello'), filename: 'note.txt', content_type: 'text/plain')
+          message.save!
+          message.id
+        end
+
+        run_test!
+      end
+
+      response '404', 'message has no attachment' do
+        let(:id) do
+          chat.messages.create!(type: 'UserMessage', content: 'no file', ai_model: 'gpt-4').id
+        end
 
         run_test!
       end

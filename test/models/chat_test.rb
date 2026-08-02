@@ -1,6 +1,8 @@
 require "test_helper"
 
 class ChatTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   setup do
     @user = users(:family_admin)
     @assistant = mock
@@ -198,5 +200,76 @@ class ChatTest < ActiveSupport::TestCase
     assert_no_difference [ "DebugLogEntry.count", "Message.count" ] do
       assert_not chat.handle_undelivered_response!(complete)
     end
+  end
+
+  test "start! enqueues auto-title job" do
+    assert_enqueued_with(job: GenerateChatTitleJob) do
+      @user.chats.start!("How much did I spend on groceries last month?", model: "gpt-4.1")
+    end
+  end
+
+  test "auto_generate_title! replaces placeholder with LLM title" do
+    prompt = "How much did I spend on groceries last month compared to the month before?"
+    chat = @user.chats.start!(prompt, model: "gpt-4.1")
+
+    provider = mock
+    provider.expects(:chat_response).with do |sent_prompt, kwargs|
+      sent_prompt == prompt && kwargs[:model] == "gpt-4.1" && kwargs[:instructions].present?
+    end.returns(
+      OpenStruct.new(
+        success?: true,
+        data: OpenStruct.new(messages: [ OpenStruct.new(output_text: "\"Grocery spending comparison.\"") ])
+      )
+    )
+    chat.stubs(:get_model_provider).returns(provider)
+
+    chat.auto_generate_title!
+
+    assert_equal "Grocery spending comparison", chat.reload.title
+  end
+
+  test "auto_generate_title! keeps placeholder when user already renamed the chat" do
+    chat = @user.chats.start!("What is my net worth?", model: "gpt-4.1")
+    chat.update!(title: "My custom name")
+
+    chat.expects(:get_model_provider).never
+    chat.auto_generate_title!
+
+    assert_equal "My custom name", chat.reload.title
+  end
+
+  test "auto_generate_title! keeps placeholder when no provider is configured" do
+    chat = @user.chats.start!("What is my net worth?", model: "gpt-4.1")
+    chat.stubs(:get_model_provider).returns(nil)
+
+    chat.auto_generate_title!
+
+    assert_equal "What is my net worth?", chat.reload.title
+  end
+
+  test "auto_generate_title! keeps placeholder when provider call fails" do
+    chat = @user.chats.start!("What is my net worth?", model: "gpt-4.1")
+
+    provider = mock
+    provider.expects(:chat_response).returns(OpenStruct.new(success?: false, error: StandardError.new("boom")))
+    chat.stubs(:get_model_provider).returns(provider)
+
+    chat.auto_generate_title!
+
+    assert_equal "What is my net worth?", chat.reload.title
+  end
+
+  test "auto_generate_title! keeps placeholder when provider returns blank title" do
+    chat = @user.chats.start!("What is my net worth?", model: "gpt-4.1")
+
+    provider = mock
+    provider.expects(:chat_response).returns(
+      OpenStruct.new(success?: true, data: OpenStruct.new(messages: [ OpenStruct.new(output_text: "  \"\"  ") ]))
+    )
+    chat.stubs(:get_model_provider).returns(provider)
+
+    chat.auto_generate_title!
+
+    assert_equal "What is my net worth?", chat.reload.title
   end
 end

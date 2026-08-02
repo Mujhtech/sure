@@ -28,6 +28,7 @@ module Assistant
         Function::GetBalanceSheet,
         Function::GetIncomeStatement,
         Function::GetBudget,
+        Function::CreateBudget,
         Function::ImportBankStatement,
         Function::SearchFamilyFiles,
         Function::CreateGoal,
@@ -36,7 +37,11 @@ module Assistant
         Function::UpdateTag,
         Function::GetCategories,
         Function::CreateCategory,
-        Function::UpdateCategory
+        Function::UpdateCategory,
+        Function::GetRules,
+        Function::CreateRule,
+        Function::CreateTransaction,
+        Function::UpdateTransaction
       ]
     end
 

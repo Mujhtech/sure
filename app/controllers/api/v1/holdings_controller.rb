@@ -166,7 +166,6 @@ class Api::V1::HoldingsController < Api::V1::BaseController
 
   private
 
-<<<<<<< HEAD
     def set_readable_holding
       @holding = find_holding(readable_holdings_scope)
     end
@@ -181,10 +180,6 @@ class Api::V1::HoldingsController < Api::V1::BaseController
       end
 
       scope.find(params[:id])
-=======
-    def set_holding
-      @holding = accessible_holdings.find(params[:id])
->>>>>>> main
     rescue ActiveRecord::RecordNotFound
       render json: { error: "not_found", message: "Holding not found" }, status: :not_found
     end

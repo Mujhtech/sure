@@ -774,6 +774,25 @@ components:
           items:
             "$ref": "#/components/schemas/ToolCall"
           nullable: true
+        attachment:
+          type: object
+          nullable: true
+          description: Present when the message has a file attachment.
+          required:
+          - filename
+          - content_type
+          - byte_size
+          - url
+          properties:
+            filename:
+              type: string
+            content_type:
+              type: string
+            byte_size:
+              type: integer
+            url:
+              type: string
+              description: API path that redirects to the file (auth required).
     MessageResponse:
       allOf:
       - "$ref": "#/components/schemas/Message"
@@ -844,6 +863,29 @@ components:
           pagination:
             "$ref": "#/components/schemas/Pagination"
             nullable: true
+    ChatUpdates:
+      allOf:
+      - "$ref": "#/components/schemas/ChatResource"
+      - type: object
+        required:
+        - messages
+        - pending_response
+        - server_time
+        properties:
+          messages:
+            type: array
+            description: Messages created or updated since the `since` cursor (all
+              messages when omitted). Upsert by id.
+            items:
+              "$ref": "#/components/schemas/Message"
+          pending_response:
+            type: boolean
+            description: True while an assistant response is still being generated;
+              keep polling.
+          server_time:
+            type: string
+            format: date-time
+            description: Cursor to pass as `since` on the next poll.
     ChatCollection:
       type: object
       required:
@@ -12528,6 +12570,50 @@ paths:
           description: chat deleted
         '404':
           description: chat not found
+  "/api/v1/chats/{id}/updates":
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: Chat ID
+      schema:
+        type: string
+    - name: since
+      in: query
+      required: false
+      description: ISO8601 cursor from the previous poll (server_time). Omit to fetch
+        all messages.
+      schema:
+        type: string
+    get:
+      summary: Poll a chat for updates
+      tags:
+      - Chats
+      description: Incremental polling endpoint. Returns messages created or updated
+        since the given cursor, plus whether an assistant response is still pending.
+        Pass the returned server_time as the since parameter on the next poll and
+        upsert messages by id (the window is inclusive).
+      security:
+      - apiKeyAuth: []
+      responses:
+        '200':
+          description: chat updates returned
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ChatUpdates"
+        '422':
+          description: invalid cursor
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '404':
+          description: chat not found
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
   "/api/v1/chats/{chat_id}/messages":
     parameters:
     - name: chat_id
@@ -12540,6 +12626,11 @@ paths:
       summary: Create a message
       tags:
       - Chat Messages
+      description: 'Creates a user message and triggers an asynchronous AI response.
+        Also accepts multipart/form-data with an optional `file` part (max 25MB):
+        PDFs are queued as bank statement imports, other supported documents go to
+        the family document store, and the attachment metadata is returned on the
+        message. Provide `content`, `file`, or both.'
       security:
       - apiKeyAuth: []
       parameters: []
@@ -12572,8 +12663,22 @@ paths:
                   type: string
                 model:
                   type: string
-              required:
-              - content
+                file:
+                  type: string
+                  format: binary
+                  description: Optional attachment (multipart/form-data only)
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                model:
+                  type: string
+                file:
+                  type: string
+                  format: binary
+                  description: Optional attachment (multipart/form-data only)
         required: true
   "/api/v1/chats/{chat_id}/messages/retry":
     parameters:
@@ -12641,6 +12746,33 @@ paths:
             application/json:
               schema:
                 "$ref": "#/components/schemas/ErrorResponse"
+  "/api/v1/chats/{chat_id}/messages/{id}/attachment":
+    parameters:
+    - name: chat_id
+      in: path
+      required: true
+      description: Chat ID
+      schema:
+        type: string
+    - name: id
+      in: path
+      required: true
+      description: Message ID
+      schema:
+        type: string
+    get:
+      summary: Download a message attachment
+      tags:
+      - Chat Messages
+      description: Redirects to the attached file. Pass disposition=attachment to
+        force download.
+      security:
+      - apiKeyAuth: []
+      responses:
+        '302':
+          description: redirects to the file
+        '404':
+          description: message has no attachment
   "/api/v1/currencies":
     get:
       summary: List supported currencies

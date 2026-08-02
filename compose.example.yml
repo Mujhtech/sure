@@ -63,6 +63,9 @@ x-rails-env: &rails_env
   LLM_CONTEXT_WINDOW: ${LLM_CONTEXT_WINDOW:-}
   OPENAI_REQUEST_TIMEOUT: ${OPENAI_REQUEST_TIMEOUT:-60}
 
+  ANDROID_APP_PACKAGE_NAME: ${ANDROID_APP_PACKAGE_NAME:-com.mujhtech.northledger}
+  ANDROID_APP_SHA256_CERT_FINGERPRINTS: ${ANDROID_APP_SHA256_CERT_FINGERPRINTS:-}
+
 services:
   web:
     image: ghcr.io/we-promise/sure:stable

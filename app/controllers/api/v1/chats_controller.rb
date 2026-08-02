@@ -3,9 +3,9 @@
 class Api::V1::ChatsController < Api::V1::BaseController
   include Pagy::Backend
   before_action :require_ai_enabled
-  before_action :ensure_read_scope, only: [ :index, :show ]
+  before_action :ensure_read_scope, only: [ :index, :show, :updates ]
   before_action :ensure_write_scope, only: [ :create, :update, :destroy ]
-  before_action :set_chat, only: [ :show, :update, :destroy ]
+  before_action :set_chat, only: [ :show, :update, :destroy, :updates ]
 
   def index
     @pagy, @chats = pagy(current_resource_owner.chats.ordered, items: 20)
@@ -14,6 +14,29 @@ class Api::V1::ChatsController < Api::V1::BaseController
   def show
     return unless @chat
     @pagy, @messages = pagy(@chat.messages.ordered, items: 50)
+  end
+
+  # Incremental polling endpoint for API clients (e.g. mobile apps) waiting on
+  # an assistant response. Returns only messages created or updated since the
+  # given cursor, so clients don't have to re-fetch the whole conversation.
+  #
+  # Pass `since` (the `server_time` of the previous poll). The window is
+  # inclusive, so an update landing in the same instant as the previous poll is
+  # never missed; clients should upsert messages by id.
+  MAX_UPDATES_MESSAGES = 200
+
+  def updates
+    return unless @chat
+
+    since = parse_since_param
+    return if performed?
+
+    scope = @chat.messages.ordered
+    scope = scope.where(updated_at: since..) if since
+
+    @server_time = Time.current
+    @messages = scope.last(MAX_UPDATES_MESSAGES)
+    @pending_response = @chat.messages.where(type: "AssistantMessage", status: "pending").exists?
   end
 
   def create
@@ -68,6 +91,15 @@ class Api::V1::ChatsController < Api::V1::BaseController
       @chat = current_resource_owner.chats.find(params[:id])
     rescue ActiveRecord::RecordNotFound
       render json: { error: "Chat not found" }, status: :not_found
+    end
+
+    def parse_since_param
+      return nil if params[:since].blank?
+
+      Time.iso8601(params[:since])
+    rescue ArgumentError
+      render json: { error: "invalid_since", message: "since must be an ISO8601 timestamp" }, status: :unprocessable_entity
+      nil
     end
 
     def chat_params

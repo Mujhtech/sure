@@ -172,6 +172,90 @@ class Api::V1::MessagesControllerTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
+  test "creates message with a document attachment routed to the document store" do
+    Family.any_instance.stubs(:upload_document).returns(nil)
+
+    assert_difference "UserMessage.count" do
+      post "/api/v1/chats/#{@chat.id}/messages",
+        params: { content: "What does this file say?", file: fixture_file_upload("test.txt", "text/plain") },
+        headers: bearer_auth_header(@write_token)
+    end
+
+    assert_response :created
+    body = JSON.parse(response.body)
+
+    assert_equal "test.txt", body["attachment"]["filename"]
+    assert body["attachment"]["url"].present?
+    assert_includes body["content"], "What does this file say?"
+    assert_includes body["content"], "[Attached file: test.txt"
+
+    message = UserMessage.find(body["id"])
+    assert message.attachment.attached?
+  end
+
+  test "creates message with a PDF attachment routed to bank statement import" do
+    pdf_import_id = SecureRandom.uuid
+    pdf_import = mock
+    pdf_import.stubs(:id).returns(pdf_import_id)
+    pdf_import.expects(:process_with_ai_later).returns(true)
+    PdfImport.expects(:create_from_upload!).returns(pdf_import)
+
+    post "/api/v1/chats/#{@chat.id}/messages",
+      params: { file: fixture_file_upload("test.txt", "application/pdf") },
+      headers: bearer_auth_header(@write_token)
+
+    assert_response :created
+    body = JSON.parse(response.body)
+
+    assert_includes body["content"], "import_bank_statement"
+    assert_includes body["content"], pdf_import_id
+  end
+
+  test "rejects message with neither content nor file" do
+    post "/api/v1/chats/#{@chat.id}/messages",
+      params: { content: "" },
+      headers: bearer_auth_header(@write_token)
+
+    assert_response :unprocessable_entity
+    assert_equal "validation_failed", JSON.parse(response.body)["error"]
+  end
+
+  test "rejects oversized upload" do
+    upload = fixture_file_upload("test.txt", "text/plain")
+    ActionDispatch::Http::UploadedFile.any_instance.stubs(:size).returns(Chat::UploadRouter::MAX_SIZE + 1)
+
+    post "/api/v1/chats/#{@chat.id}/messages",
+      params: { file: upload },
+      headers: bearer_auth_header(@write_token)
+
+    assert_response :unprocessable_entity
+    assert_equal "file_too_large", JSON.parse(response.body)["error"]
+  end
+
+  test "attachment endpoint redirects to the blob" do
+    Family.any_instance.stubs(:upload_document).returns(nil)
+
+    post "/api/v1/chats/#{@chat.id}/messages",
+      params: { content: "with file", file: fixture_file_upload("test.txt", "text/plain") },
+      headers: bearer_auth_header(@write_token)
+    message_id = JSON.parse(response.body)["id"]
+
+    get "/api/v1/chats/#{@chat.id}/messages/#{message_id}/attachment",
+      headers: bearer_auth_header(@write_token)
+
+    assert_response :redirect
+    assert_includes response.location, "rails/active_storage"
+  end
+
+  test "attachment endpoint returns 404 when message has no attachment" do
+    message = @chat.messages.create!(type: "UserMessage", content: "no file", ai_model: "gpt-4.1")
+
+    get "/api/v1/chats/#{@chat.id}/messages/#{message.id}/attachment",
+      headers: bearer_auth_header(@write_token)
+
+    assert_response :not_found
+  end
+
   private
 
     def bearer_auth_header(token)

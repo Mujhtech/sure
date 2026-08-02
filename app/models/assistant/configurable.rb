@@ -106,6 +106,14 @@ module Assistant::Configurable
           ### Function calling rules
 
           - Use the functions available to you to get user financial data and enhance your responses
+          - Before calling any function that changes data (create_transaction, update_transaction, create_rule,
+            create_category, create_tag, create_goal, or any update function), state exactly what will change
+            and wait for the user's explicit confirmation in this conversation. Never chain multiple data-changing
+            calls without confirming each one.
+          - When the user wants something to happen automatically or repeatedly (e.g. "always categorize X as Y",
+            fixing a recurring category mismatch, renaming messy merchant names), offer to set up an automation
+            rule with create_rule. Check get_rules first to avoid duplicates, and confirm the rule's conditions
+            with the user before creating it.
           - For functions that require dates, use the current date as your reference point: #{Date.current}
           - If you suspect that you do not have enough data to 100% accurately answer, be transparent about it and state exactly what
             the data you're presenting represents and what context it is in (i.e. date range, account, etc.)

@@ -1,5 +1,16 @@
 class Chat < ApplicationRecord
   include Debuggable
+  include Assistant::Provided
+
+  AUTO_TITLE_INSTRUCTIONS = <<~PROMPT.freeze
+    You generate a short title for a conversation in a personal finance app, based on the user's first message.
+
+    Rules:
+    - Respond with ONLY the title text. No quotes, no trailing punctuation, no explanations.
+    - 3 to 8 words, plain language, capitalized like a sentence.
+    - Write it in the same language as the message.
+    - Summarize the topic or request, not the answer.
+  PROMPT
 
   RATE_LIMIT_PATTERNS = [
     /\b429\b/i,
@@ -44,9 +55,11 @@ class Chat < ApplicationRecord
       create!(
         title: generate_title(prompt),
         messages: [ UserMessage.new(content: prompt, ai_model: effective_model) ]
-      )
+      ).tap(&:auto_title_later)
     end
 
+    # Fast synchronous placeholder; replaced by an LLM-generated title via
+    # GenerateChatTitleJob shortly after the chat is created.
     def generate_title(prompt)
       prompt.first(80)
     end
@@ -122,6 +135,41 @@ class Chat < ApplicationRecord
     ActionView::RecordIdentifier.dom_id(self, :chat_error)
   end
 
+  def auto_title_later
+    GenerateChatTitleJob.perform_later(self)
+  end
+
+  # Replaces the truncated-prompt placeholder title with a concise LLM-generated
+  # one. No-ops (keeping the placeholder) when the user has already renamed the
+  # chat, no provider is configured, or the provider call fails.
+  def auto_generate_title!
+    first_message = conversation_messages.ordered.first
+    return if first_message.nil? || first_message.role != "user"
+    return unless title == self.class.generate_title(first_message.content.to_s)
+
+    provider = get_model_provider(first_message.ai_model)
+    return unless provider
+
+    response = provider.chat_response(
+      first_message.content.to_s.first(2_000),
+      model: first_message.ai_model,
+      instructions: AUTO_TITLE_INSTRUCTIONS,
+      session_id: id,
+      family: user&.family
+    )
+    return unless response.success?
+
+    new_title = sanitize_auto_title(Array(response.data&.messages).map(&:output_text).join(" "))
+    return if new_title.blank?
+
+    update!(title: new_title)
+    broadcast_replace target: title_target, partial: "chats/chat_title", locals: { chat: self, ctx: "chat" }
+  end
+
+  def title_target
+    ActionView::RecordIdentifier.dom_id(self, :title)
+  end
+
   def ask_assistant_later(message)
     clear_error
     pending = messages.create!(type: "AssistantMessage", content: "", ai_model: message.ai_model, status: :pending)
@@ -172,6 +220,17 @@ class Chat < ApplicationRecord
   end
 
   private
+
+    def sanitize_auto_title(text)
+      text.to_s
+          .gsub(/\s+/, " ")
+          .strip
+          .delete_prefix('"').delete_suffix('"')
+          .delete_prefix("'").delete_suffix("'")
+          .sub(/[.!]+\z/, "")
+          .strip
+          .first(80)
+    end
 
     def undelivered_error_payload(assistant_message)
       {

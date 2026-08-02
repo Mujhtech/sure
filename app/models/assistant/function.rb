@@ -83,6 +83,21 @@ class Assistant::Function
       UuidFormat.valid?(str)
     end
 
+    # Resolves a family-scoped record from either an id or a case-insensitive
+    # exact name, so the model can pass names straight from conversation.
+    def resolve_family_record(kind, value)
+      scope = case kind
+      when :category then family.categories
+      when :merchant then family.merchants
+      when :account  then family.accounts
+      when :tag      then family.tags
+      else raise ArgumentError, "Unknown record kind: #{kind}"
+      end
+
+      record = scope.find_by(id: value) if valid_uuid?(value)
+      record || scope.where("LOWER(name) = ?", value.to_s.downcase.strip).first
+    end
+
     # To save tokens, we provide the AI metadata about the series and a flat array of
     # raw, formatted values which it can infer dates from
     def to_ai_time_series(series)

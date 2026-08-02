@@ -8,6 +8,7 @@ class AppleAppSiteAssociationsController < ActionController::API
           {
             appIDs: [ "6JR3ZGLPD6.mujhtech.usemoney" ],
             components: [
+              { "/": "/app/*" },
               { "/": "/events/30-day-savings-challenge" },
               { "/": "/events/30-day-savings-2026" }
             ]
