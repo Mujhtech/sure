@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module MonthlyDump
+module FinancialReplay
   class PersonaRefiner
     ARCHETYPES = {
       "investor" => {
@@ -69,7 +69,7 @@ module MonthlyDump
         prompt,
         model: Chat.default_model,
         instructions: instructions,
-        session_id: "monthly-dump-#{family.id}-#{month_key}",
+        session_id: "financial-replay-#{family.id}-#{month_key}",
         user_identifier: Digest::SHA256.hexdigest(user.id.to_s),
         family: family
       )
@@ -81,7 +81,7 @@ module MonthlyDump
 
       refined = parse_response(response.data, fallback)
       unless refined
-        capture_failure(JSON::ParserError.new("Monthly Dump persona response was invalid"))
+        capture_failure(JSON::ParserError.new("Financial Replay persona response was invalid"))
         return fallback
       end
 
@@ -199,7 +199,7 @@ module MonthlyDump
 
       def cache_key
         digest = Digest::SHA256.hexdigest(JSON.generate(metrics))
-        "monthly-dump/persona/v1/#{family.id}/#{user.id}/#{month_key}/#{digest}"
+        "financial-replay/persona/v1/#{family.id}/#{user.id}/#{month_key}/#{digest}"
       end
 
       def month_key
@@ -210,7 +210,7 @@ module MonthlyDump
         DebugLogEntry.capture(
           category: "ai_personalization",
           level: "warn",
-          message: "Monthly Dump AI refinement failed; heuristic copy was used",
+          message: "Financial Replay AI refinement failed; heuristic copy was used",
           source: self.class.name,
           provider_key: Setting.llm_provider,
           family: family,
@@ -222,7 +222,7 @@ module MonthlyDump
         )
       rescue StandardError => logging_error
         Rails.logger.warn(
-          "MonthlyDump::PersonaRefiner could not record AI fallback: " \
+          "FinancialReplay::PersonaRefiner could not record AI fallback: " \
           "#{logging_error.class}: #{logging_error.message}"
         )
       end

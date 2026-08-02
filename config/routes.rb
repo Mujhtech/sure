@@ -780,7 +780,9 @@ Rails.application.routes.draw do
       resource :reports, only: [ :show ], controller: :reports do
         get :export_transactions
       end
-      resource :monthly_dump, only: [ :show ], controller: :monthly_dumps
+      resource :financial_replay, only: [ :show ], controller: :financial_replays
+      # Legacy alias for app builds that predate the Financial Replay rebrand.
+      resource :monthly_dump, only: [ :show ], controller: :financial_replays
       resource :family_settings, only: [ :show, :update ], controller: :family_settings
       resource :preferences, only: [ :show, :update ], controller: :preferences
       resource :hosting, only: [ :show, :update ], controller: :hosting do
@@ -867,9 +869,11 @@ Rails.application.routes.draw do
       end
 
       resources :chats, only: [ :index, :show, :create, :update, :destroy ] do
+        get :updates, on: :member
         resources :messages, only: [ :create ] do
           post :retry, on: :collection
           post :report_timeout, on: :member
+          get :attachment, on: :member
         end
       end
 

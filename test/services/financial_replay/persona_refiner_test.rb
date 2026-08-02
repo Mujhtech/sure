@@ -2,7 +2,7 @@
 
 require "test_helper"
 
-class MonthlyDump::PersonaRefinerTest < ActiveSupport::TestCase
+class FinancialReplay::PersonaRefinerTest < ActiveSupport::TestCase
   setup do
     @user = users(:family_admin)
     @month = Date.current.prev_month.beginning_of_month.to_date
@@ -109,7 +109,7 @@ class MonthlyDump::PersonaRefinerTest < ActiveSupport::TestCase
 
   private
     def build_refiner
-      MonthlyDump::PersonaRefiner.new(
+      FinancialReplay::PersonaRefiner.new(
         user: @user,
         month: @month,
         metrics: @metrics,

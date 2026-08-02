@@ -2,7 +2,7 @@
 
 require "test_helper"
 
-class Api::V1::MonthlyDumpsControllerTest < ActionDispatch::IntegrationTest
+class Api::V1::FinancialReplaysControllerTest < ActionDispatch::IntegrationTest
   setup do
     @user = users(:family_admin)
     @family = @user.family
@@ -11,21 +11,21 @@ class Api::V1::MonthlyDumpsControllerTest < ActionDispatch::IntegrationTest
 
     @api_key = ApiKey.create!(
       user: @user,
-      name: "Monthly Dump Read Key",
+      name: "Financial Replay Read Key",
       scopes: [ "read" ],
-      display_key: "monthly_dump_#{SecureRandom.hex(8)}",
+      display_key: "financial_replay_#{SecureRandom.hex(8)}",
       source: "mobile"
     )
 
     @account = Account.create!(
       family: @family,
-      name: "Monthly Dump Checking",
+      name: "Financial Replay Checking",
       balance: 2500,
       currency: @family.currency,
       accountable: Depository.new
     )
     @category = @family.categories.create!(
-      name: "Monthly Dump Dining",
+      name: "Financial Replay Dining",
       color: "#FF735C",
       lucide_icon: "utensils"
     )
@@ -45,7 +45,7 @@ class Api::V1::MonthlyDumpsControllerTest < ActionDispatch::IntegrationTest
       entryable: Transaction.new
     )
 
-    MonthlyDump::PersonaRefiner.any_instance.stubs(:call).returns({
+    FinancialReplay::PersonaRefiner.any_instance.stubs(:call).returns({
       key: "achiever",
       title: "The Achiever",
       headline: "You turned targets into receipts.",
@@ -59,13 +59,13 @@ class Api::V1::MonthlyDumpsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "requires authentication" do
-    get "/api/v1/monthly_dump"
+    get "/api/v1/financial_replay"
 
     assert_response :unauthorized
   end
 
   test "returns the latest completed month by default" do
-    get "/api/v1/monthly_dump", headers: api_headers
+    get "/api/v1/financial_replay", headers: api_headers
 
     assert_response :success
     data = JSON.parse(response.body)
@@ -81,24 +81,26 @@ class Api::V1::MonthlyDumpsControllerTest < ActionDispatch::IntegrationTest
     assert_kind_of Numeric, data.dig("summary", "expense_change_percent")
     assert_operator data.dig("activity", "transaction_count"), :>=, 2
     assert_equal @month_start.end_of_month.day, data.dig("activity", "tracked_days")
-    assert_equal "Monthly Dump Dining", data.dig("categories", 0, "category_name")
+    assert_equal "Financial Replay Dining", data.dig("categories", 0, "category_name")
     assert_equal "achiever", data.dig("persona", "key")
     assert_equal "ai", data.dig("persona", "source")
   end
 
-  test "allows an older completed month" do
+  test "rejects older completed months" do
     requested_month = @month_start.prev_month
 
-    get "/api/v1/monthly_dump",
+    get "/api/v1/financial_replay",
         params: { month: requested_month.strftime("%Y-%m") },
         headers: api_headers
 
-    assert_response :success
-    assert_equal requested_month.strftime("%Y-%m"), JSON.parse(response.body).dig("period", "month")
+    assert_response :unprocessable_entity
+    data = JSON.parse(response.body)
+    assert_equal "validation_failed", data["error"]
+    assert_equal "Financial Replay is only available for the most recent completed month.", data["message"]
   end
 
   test "rejects the current month" do
-    get "/api/v1/monthly_dump",
+    get "/api/v1/financial_replay",
         params: { month: Date.current.strftime("%Y-%m") },
         headers: api_headers
 
@@ -109,7 +111,7 @@ class Api::V1::MonthlyDumpsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "rejects malformed month values" do
-    get "/api/v1/monthly_dump",
+    get "/api/v1/financial_replay",
         params: { month: "06/2026" },
         headers: api_headers
 

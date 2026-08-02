@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module MonthlyDump
+module FinancialReplay
   class InvalidMonthError < StandardError; end
 
   class IncompleteMonthError < StandardError
@@ -8,7 +8,7 @@ module MonthlyDump
 
     def initialize(latest_available_month)
       @latest_available_month = latest_available_month
-      super("Monthly Dump is only available for completed months. The latest available month is #{latest_available_month}.")
+      super("Financial Replay is only available for completed months. The latest available month is #{latest_available_month}.")
     end
   end
 
@@ -62,10 +62,16 @@ module MonthlyDump
       end
 
       def validate_completed_month!
-        return if month_start < Date.current.beginning_of_month.to_date
+        latest = Date.current.prev_month.beginning_of_month.to_date
+        return if month_start == latest
 
-        latest = Date.current.prev_month.strftime("%Y-%m")
-        raise IncompleteMonthError, latest
+        # The replay is a limited-time monthly drop: only the most recent
+        # completed month is ever served, so clients can't browse history.
+        if month_start < latest
+          raise InvalidMonthError, "Financial Replay is only available for the most recent completed month."
+        end
+
+        raise IncompleteMonthError, latest.strftime("%Y-%m")
       end
 
       def period_payload
@@ -112,9 +118,22 @@ module MonthlyDump
             average_daily_spend: money_payload(ensure_money(current_expense_totals.total) / tracked_days),
             busiest_day: busiest_day_payload(expenses),
             biggest_expense: biggest_expense_payload(expenses),
-            active_recurring_count: active_recurring_count
+            active_recurring_count: active_recurring_count,
+            weekday_totals: weekday_totals_payload(expenses)
           }
         end
+      end
+
+      # Absolute spend per weekday, Monday-first, in the family currency.
+      def weekday_totals_payload(expenses)
+        totals = Array.new(7, BigDecimal("0"))
+
+        expenses.each do |transaction|
+          index = (transaction.entry.date.wday + 6) % 7
+          totals[index] += converted_abs_amount(transaction.entry.amount, transaction.entry.currency)
+        end
+
+        totals.map { |total| total.to_f.round(2) }
       end
 
       def categories_payload
@@ -190,7 +209,7 @@ module MonthlyDump
           }
         end
       rescue StandardError => e
-        Rails.logger.warn "MonthlyDump::Builder net worth unavailable: #{e.class}: #{e.message}"
+        Rails.logger.warn "FinancialReplay::Builder net worth unavailable: #{e.class}: #{e.message}"
         zero = money_payload(Money.new(0, family.currency))
         { current_net_worth: zero, total_assets: zero, total_liabilities: zero, change_percent: nil }
       end
@@ -221,7 +240,7 @@ module MonthlyDump
 
             if target.present? && !target.zero?
               spent = budget.actual_spending
-              progress = spent / target.to_f
+              progress = spent.to_f / target.to_f
               percent = (progress * 100).round(1)
               {
                 progress: progress.round(4),
@@ -234,7 +253,7 @@ module MonthlyDump
           end
         end
       rescue StandardError => e
-        Rails.logger.warn "MonthlyDump::Builder budget unavailable: #{e.class}: #{e.message}"
+        Rails.logger.warn "FinancialReplay::Builder budget unavailable: #{e.class}: #{e.message}"
         nil
       end
 
@@ -256,7 +275,7 @@ module MonthlyDump
           if goal
             goal.pooled_allocations = Goal.pooled_allocations_for(family)
             goal.market_flows = Goal.market_flows_for(family)
-            progress = [ [ goal.progress_percent / 100.0, 0 ].max, 1 ].min
+            progress = [ [ goal.progress_percent.to_f / 100.0, 0 ].max, 1 ].min
 
             {
               name: goal.name,
@@ -268,7 +287,7 @@ module MonthlyDump
           end
         end
       rescue StandardError => e
-        Rails.logger.warn "MonthlyDump::Builder goal unavailable: #{e.class}: #{e.message}"
+        Rails.logger.warn "FinancialReplay::Builder goal unavailable: #{e.class}: #{e.message}"
         nil
       end
 
@@ -292,7 +311,7 @@ module MonthlyDump
           end
         end
       rescue StandardError => e
-        Rails.logger.warn "MonthlyDump::Builder investment activity unavailable: #{e.class}: #{e.message}"
+        Rails.logger.warn "FinancialReplay::Builder investment activity unavailable: #{e.class}: #{e.message}"
         {
           has_investments: false,
           contributions: money_payload(Money.new(0, family.currency)),
@@ -379,7 +398,7 @@ module MonthlyDump
       def active_recurring_count
         family.recurring_transactions.accessible_by(user).active.count
       rescue StandardError => e
-        Rails.logger.warn "MonthlyDump::Builder recurring count unavailable: #{e.class}: #{e.message}"
+        Rails.logger.warn "FinancialReplay::Builder recurring count unavailable: #{e.class}: #{e.message}"
         0
       end
 

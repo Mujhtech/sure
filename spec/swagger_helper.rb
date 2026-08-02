@@ -482,6 +482,18 @@ RSpec.configure do |config|
                 type: :array,
                 items: { '$ref' => '#/components/schemas/ToolCall' },
                 nullable: true
+              },
+              attachment: {
+                type: :object,
+                nullable: true,
+                description: 'Present when the message has a file attachment.',
+                required: %w[filename content_type byte_size url],
+                properties: {
+                  filename: { type: :string },
+                  content_type: { type: :string },
+                  byte_size: { type: :integer },
+                  url: { type: :string, description: 'API path that redirects to the file (auth required).' }
+                }
               }
             }
           },
@@ -537,6 +549,31 @@ RSpec.configure do |config|
                   pagination: {
                     '$ref' => '#/components/schemas/Pagination',
                     nullable: true
+                  }
+                }
+              }
+            ]
+          },
+          ChatUpdates: {
+            allOf: [
+              { '$ref' => '#/components/schemas/ChatResource' },
+              {
+                type: :object,
+                required: %w[messages pending_response server_time],
+                properties: {
+                  messages: {
+                    type: :array,
+                    description: 'Messages created or updated since the `since` cursor (all messages when omitted). Upsert by id.',
+                    items: { '$ref' => '#/components/schemas/Message' }
+                  },
+                  pending_response: {
+                    type: :boolean,
+                    description: 'True while an assistant response is still being generated; keep polling.'
+                  },
+                  server_time: {
+                    type: :string,
+                    format: 'date-time',
+                    description: 'Cursor to pass as `since` on the next poll.'
                   }
                 }
               }
@@ -4986,7 +5023,7 @@ RSpec.configure do |config|
               series: { '$ref' => '#/components/schemas/TimeSeries' }
             }
           },
-          MonthlyDumpResponse: {
+          FinancialReplayResponse: {
             type: :object,
             required: %w[currency period summary activity categories net_worth budget goal investments persona],
             properties: {
@@ -5046,7 +5083,14 @@ RSpec.configure do |config|
                       category_icon: { type: :string, nullable: true }
                     }
                   },
-                  active_recurring_count: { type: :integer, minimum: 0 }
+                  active_recurring_count: { type: :integer, minimum: 0 },
+                  weekday_totals: {
+                    type: :array,
+                    description: "Absolute spend per weekday, Monday-first, in the family currency",
+                    minItems: 7,
+                    maxItems: 7,
+                    items: { type: :number }
+                  }
                 }
               },
               categories: {
