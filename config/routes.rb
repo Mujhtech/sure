@@ -780,7 +780,9 @@ Rails.application.routes.draw do
       resource :reports, only: [ :show ], controller: :reports do
         get :export_transactions
       end
-      resource :financial_replay, only: [ :show ], controller: :financial_replays
+      resource :financial_replay, only: [ :show ], controller: :financial_replays do
+        get :availability
+      end
       # Legacy alias for app builds that predate the Financial Replay rebrand.
       resource :monthly_dump, only: [ :show ], controller: :financial_replays
       resource :family_settings, only: [ :show, :update ], controller: :family_settings

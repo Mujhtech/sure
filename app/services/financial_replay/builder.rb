@@ -3,6 +3,12 @@
 module FinancialReplay
   class InvalidMonthError < StandardError; end
 
+  class InsufficientActivityError < StandardError
+    def initialize
+      super("Financial Replay needs a full month of activity before it can tell a story.")
+    end
+  end
+
   class IncompleteMonthError < StandardError
     attr_reader :latest_available_month
 
@@ -13,6 +19,9 @@ module FinancialReplay
   end
 
   class Builder
+    # A replay with fewer moves than this reads as empty and shames new users.
+    MINIMUM_TRANSACTION_COUNT = 5
+
     def initialize(user:, month: nil, persona_refiner: PersonaRefiner)
       @user = user
       @family = user.family
@@ -28,7 +37,19 @@ module FinancialReplay
       validate_completed_month!
     end
 
+    # Cheap eligibility check: only counts activity, skips the full payload.
+    def availability
+      count = report_transactions.count + report_trades.count
+      {
+        month: month_start.strftime("%Y-%m"),
+        transaction_count: count,
+        available: count >= MINIMUM_TRANSACTION_COUNT
+      }
+    end
+
     def call
+      raise InsufficientActivityError unless availability[:available]
+
       payload = {
         currency: family.currency,
         period: period_payload,

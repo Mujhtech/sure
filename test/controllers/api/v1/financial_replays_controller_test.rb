@@ -44,6 +44,15 @@ class Api::V1::FinancialReplaysControllerTest < ActionDispatch::IntegrationTest
       currency: @family.currency,
       entryable: Transaction.new
     )
+    3.times do |index|
+      @account.entries.create!(
+        name: "Weekly Groceries #{index + 1}",
+        date: @month_start + (5 + index * 7).days,
+        amount: 60 + index,
+        currency: @family.currency,
+        entryable: Transaction.new(category: @category)
+      )
+    end
 
     FinancialReplay::PersonaRefiner.any_instance.stubs(:call).returns({
       key: "achiever",
@@ -108,6 +117,34 @@ class Api::V1::FinancialReplaysControllerTest < ActionDispatch::IntegrationTest
     data = JSON.parse(response.body)
     assert_equal "month_not_complete", data["error"]
     assert_equal @month_start.strftime("%Y-%m"), data["latest_available_month"]
+  end
+
+  test "rejects months with too little activity" do
+    @account.entries.where(date: @month_start..@month_start.end_of_month).destroy_all
+
+    get "/api/v1/financial_replay", headers: api_headers
+
+    assert_response :unprocessable_entity
+    assert_equal "insufficient_activity", JSON.parse(response.body)["error"]
+  end
+
+  test "reports availability" do
+    get "/api/v1/financial_replay/availability", headers: api_headers
+
+    assert_response :success
+    data = JSON.parse(response.body)
+    assert_equal true, data["available"]
+    assert_equal @month_start.strftime("%Y-%m"), data["month"]
+    assert_operator data["transaction_count"], :>=, 5
+  end
+
+  test "reports unavailability for quiet months" do
+    @account.entries.where(date: @month_start..@month_start.end_of_month).destroy_all
+
+    get "/api/v1/financial_replay/availability", headers: api_headers
+
+    assert_response :success
+    assert_equal false, JSON.parse(response.body)["available"]
   end
 
   test "rejects malformed month values" do
