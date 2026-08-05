@@ -131,6 +131,69 @@ RSpec.configure do |config|
               meta: { '$ref' => '#/components/schemas/Pagination' }
             }
           },
+          InsightKeyFigure: {
+            type: :object,
+            required: %w[value caption],
+            properties: {
+              value: { type: :string },
+              caption: { type: :string }
+            }
+          },
+          InsightAction: {
+            type: :object,
+            required: %w[label route resource_id],
+            properties: {
+              label: { type: :string },
+              route: {
+                type: :string,
+                enum: %w[transactions account recurring_transactions reports budget budgets]
+              },
+              resource_id: { type: :string, format: :uuid, nullable: true }
+            }
+          },
+          Insight: {
+            type: :object,
+            required: %w[id insight_type priority status title body generated_at unread meta_line icon sentiment],
+            properties: {
+              id: { type: :string, format: :uuid },
+              insight_type: {
+                type: :string,
+                enum: %w[spending_anomaly cash_flow_warning net_worth_milestone subscription_audit
+                         savings_rate_change idle_cash budget_at_risk budget_on_track]
+              },
+              priority: { type: :string, enum: %w[high medium low] },
+              status: { type: :string, enum: %w[active read] },
+              title: { type: :string },
+              body: { type: :string },
+              currency: { type: :string, nullable: true },
+              period_start: { type: :string, format: :date, nullable: true },
+              period_end: { type: :string, format: :date, nullable: true },
+              generated_at: { type: :string, format: :'date-time' },
+              unread: { type: :boolean },
+              meta_line: { type: :string },
+              icon: { type: :string },
+              sentiment: { type: :string, enum: %w[positive negative warning neutral] },
+              key_figure: {
+                allOf: [ { '$ref' => '#/components/schemas/InsightKeyFigure' } ],
+                nullable: true
+              },
+              action: {
+                allOf: [ { '$ref' => '#/components/schemas/InsightAction' } ],
+                nullable: true
+              }
+            }
+          },
+          InsightsResponse: {
+            type: :object,
+            required: %w[insights unread_count],
+            properties: {
+              insights: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/Insight' }
+              },
+              unread_count: { type: :integer, minimum: 0 }
+            }
+          },
           ErrorResponse: {
             type: :object,
             required: %w[error],

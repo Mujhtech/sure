@@ -716,6 +716,16 @@ Rails.application.routes.draw do
 
         patch :toggle_status, on: :member
       end
+      resources :insights, only: [ :index ] do
+        collection do
+          post :refresh
+        end
+
+        member do
+          patch :dismiss
+          patch :undismiss
+        end
+      end
       resources :goals, only: [ :index, :show, :create, :update, :destroy ] do
         member do
           patch :pause
@@ -784,6 +794,7 @@ Rails.application.routes.draw do
         get :availability
       end
       # Legacy alias for app builds that predate the Financial Replay rebrand.
+      # Remove once 1.0.5+ has fully rolled out (target: November 2026).
       resource :monthly_dump, only: [ :show ], controller: :financial_replays
       resource :family_settings, only: [ :show, :update ], controller: :family_settings
       resource :preferences, only: [ :show, :update ], controller: :preferences

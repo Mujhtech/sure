@@ -110,6 +110,10 @@ module FinancialReplay
           headline: at most 56 characters.
           description: at most 130 characters.
           closing_line: at most 48 characters.
+          Optionally add "category_quips": up to 3 playful labels (max 26
+          characters each), one per top category in the order given. Ground
+          each in that category's real transaction count or total — never
+          invent numbers.
         PROMPT
       end
 
@@ -131,12 +135,17 @@ module FinancialReplay
         return unless ARCHETYPES.key?(key)
 
         definition = ARCHETYPES.fetch(key)
+        quips = Array(parsed["category_quips"])
+          .filter_map { |quip| quip.to_s.squish.presence&.first(26) }
+          .first(3)
+
         {
           key: key,
           title: definition.fetch(:title),
           headline: normalized_copy(parsed["headline"], definition.fetch(:headline), 56),
           description: normalized_copy(parsed["description"], definition.fetch(:description), 130),
           closing_line: normalized_copy(parsed["closing_line"], definition.fetch(:closing_line), 48),
+          category_quips: quips,
           symbol: definition.fetch(:symbol),
           source: "ai"
         }
@@ -199,7 +208,7 @@ module FinancialReplay
 
       def cache_key
         digest = Digest::SHA256.hexdigest(JSON.generate(metrics))
-        "financial-replay/persona/v1/#{family.id}/#{user.id}/#{month_key}/#{digest}"
+        "financial-replay/persona/v2/#{family.id}/#{user.id}/#{month_key}/#{digest}"
       end
 
       def month_key

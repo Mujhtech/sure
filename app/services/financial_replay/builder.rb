@@ -67,6 +67,7 @@ module FinancialReplay
         month: month_start,
         metrics: persona_metrics(payload)
       ).call
+      apply_category_quips(payload)
       payload
     end
 
@@ -349,7 +350,13 @@ module FinancialReplay
           tracked_days: payload.dig(:activity, :tracked_days),
           no_spend_days: payload.dig(:activity, :no_spend_days),
           active_recurring_count: payload.dig(:activity, :active_recurring_count),
-          top_categories: payload[:categories].pluck(:category_name),
+          top_categories: payload[:categories].map do |category|
+            {
+              name: category[:category_name],
+              transactions: category[:count],
+              total: category.dig(:total, :formatted)
+            }
+          end,
           net_worth_change_percent: payload.dig(:net_worth, :change_percent),
           budget_progress: payload.dig(:budget, :progress),
           goal_progress: payload.dig(:goal, :progress),
@@ -357,6 +364,19 @@ module FinancialReplay
           investment_contributions: payload.dig(:investments, :contributions, :amount),
           investment_trades_count: payload.dig(:investments, :trades_count)
         }
+      end
+
+      # The AI may hand back one playful label per top category ("12 good
+      # tables"); surface them on the category items so clients can show them
+      # instead of the plain transaction counts.
+      def apply_category_quips(payload)
+        quips = payload[:persona].delete(:category_quips)
+        return if quips.blank?
+
+        payload[:categories].each_with_index do |category, index|
+          quip = quips[index]
+          category[:quip] = quip if quip.present?
+        end
       end
 
       def income_statement

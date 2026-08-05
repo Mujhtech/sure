@@ -204,6 +204,130 @@ components:
             "$ref": "#/components/schemas/FamilyExport"
         meta:
           "$ref": "#/components/schemas/Pagination"
+    InsightKeyFigure:
+      type: object
+      required:
+      - value
+      - caption
+      properties:
+        value:
+          type: string
+        caption:
+          type: string
+    InsightAction:
+      type: object
+      required:
+      - label
+      - route
+      - resource_id
+      properties:
+        label:
+          type: string
+        route:
+          type: string
+          enum:
+          - transactions
+          - account
+          - recurring_transactions
+          - reports
+          - budget
+          - budgets
+        resource_id:
+          type: string
+          format: uuid
+          nullable: true
+    Insight:
+      type: object
+      required:
+      - id
+      - insight_type
+      - priority
+      - status
+      - title
+      - body
+      - generated_at
+      - unread
+      - meta_line
+      - icon
+      - sentiment
+      properties:
+        id:
+          type: string
+          format: uuid
+        insight_type:
+          type: string
+          enum:
+          - spending_anomaly
+          - cash_flow_warning
+          - net_worth_milestone
+          - subscription_audit
+          - savings_rate_change
+          - idle_cash
+          - budget_at_risk
+          - budget_on_track
+        priority:
+          type: string
+          enum:
+          - high
+          - medium
+          - low
+        status:
+          type: string
+          enum:
+          - active
+          - read
+        title:
+          type: string
+        body:
+          type: string
+        currency:
+          type: string
+          nullable: true
+        period_start:
+          type: string
+          format: date
+          nullable: true
+        period_end:
+          type: string
+          format: date
+          nullable: true
+        generated_at:
+          type: string
+          format: date-time
+        unread:
+          type: boolean
+        meta_line:
+          type: string
+        icon:
+          type: string
+        sentiment:
+          type: string
+          enum:
+          - positive
+          - negative
+          - warning
+          - neutral
+        key_figure:
+          allOf:
+          - "$ref": "#/components/schemas/InsightKeyFigure"
+          nullable: true
+        action:
+          allOf:
+          - "$ref": "#/components/schemas/InsightAction"
+          nullable: true
+    InsightsResponse:
+      type: object
+      required:
+      - insights
+      - unread_count
+      properties:
+        insights:
+          type: array
+          items:
+            "$ref": "#/components/schemas/Insight"
+        unread_count:
+          type: integer
+          minimum: 0
     ErrorResponse:
       type: object
       required:
@@ -9080,7 +9204,7 @@ components:
               type: string
         series:
           "$ref": "#/components/schemas/TimeSeries"
-    MonthlyDumpResponse:
+    FinancialReplayResponse:
       type: object
       required:
       - currency
@@ -9213,6 +9337,14 @@ components:
             active_recurring_count:
               type: integer
               minimum: 0
+            weekday_totals:
+              type: array
+              description: Absolute spend per weekday, Monday-first, in the family
+                currency
+              minItems: 7
+              maxItems: 7
+              items:
+                type: number
         categories:
           type: array
           maxItems: 3
@@ -13531,6 +13663,44 @@ paths:
               required:
               - family
         required: true
+  "/api/v1/financial_replay":
+    get:
+      summary: Show a completed Financial Replay
+      tags:
+      - Financial Replay
+      description: Returns a ten-slide-ready recap for a completed calendar month.
+        Defaults to the latest completed month and includes privacy-safe AI-refined
+        archetype copy with a deterministic fallback.
+      security:
+      - apiKeyAuth: []
+      parameters:
+      - name: month
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: "^\\d{4}-(0[1-9]|1[0-2])$"
+        description: Most recent completed calendar month in YYYY-MM format. Defaults
+          to the previous month; older months are rejected.
+      responses:
+        '200':
+          description: financial replay returned
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/FinancialReplayResponse"
+        '401':
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+        '422':
+          description: month is incomplete or malformed
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
   "/api/v1/goals/{goal_id}/pledges":
     parameters:
     - name: goal_id
@@ -16507,6 +16677,100 @@ paths:
                   type: string
                   description: CSV imports only. Column value that marks an amount
                     as an inflow when using custom_column strategy
+  "/api/v1/insights":
+    get:
+      summary: List proactive financial insights
+      tags:
+      - Insights
+      description: Returns visible insights in priority order and marks new insights
+        as read after building the response.
+      security:
+      - apiKeyAuth: []
+      parameters:
+      - name: mark_read
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: true
+        description: Set to false for previews that must preserve unread state.
+      responses:
+        '200':
+          description: insights returned
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/InsightsResponse"
+        '401':
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorResponse"
+  "/api/v1/insights/{id}/dismiss":
+    patch:
+      summary: Dismiss an insight
+      tags:
+      - Insights
+      security:
+      - apiKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        format: uuid
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: insight dismissed
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - insight
+                properties:
+                  insight:
+                    type: object
+                    required:
+                    - id
+                    - status
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      status:
+                        type: string
+                        enum:
+                        - dismissed
+  "/api/v1/insights/{id}/undismiss":
+    patch:
+      summary: Restore a dismissed insight
+      tags:
+      - Insights
+      security:
+      - apiKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        format: uuid
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: insight restored as read
+  "/api/v1/insights/refresh":
+    post:
+      summary: Queue insight regeneration
+      tags:
+      - Insights
+      security:
+      - apiKeyAuth: []
+      responses:
+        '202':
+          description: generation queued
   "/api/v1/invitations":
     get:
       summary: List pending invitations
@@ -17142,44 +17406,6 @@ paths:
                 "$ref": "#/components/schemas/ErrorResponse"
         '404':
           description: not found
-          content:
-            application/json:
-              schema:
-                "$ref": "#/components/schemas/ErrorResponse"
-  "/api/v1/monthly_dump":
-    get:
-      summary: Show a completed Monthly Dump
-      tags:
-      - Monthly Dump
-      description: Returns a ten-slide-ready recap for a completed calendar month.
-        Defaults to the latest completed month and includes privacy-safe AI-refined
-        archetype copy with a deterministic fallback.
-      security:
-      - apiKeyAuth: []
-      parameters:
-      - name: month
-        in: query
-        required: false
-        schema:
-          type: string
-          pattern: "^\\d{4}-(0[1-9]|1[0-2])$"
-        description: Completed calendar month in YYYY-MM format. Defaults to the previous
-          month.
-      responses:
-        '200':
-          description: monthly dump returned
-          content:
-            application/json:
-              schema:
-                "$ref": "#/components/schemas/MonthlyDumpResponse"
-        '401':
-          description: unauthorized
-          content:
-            application/json:
-              schema:
-                "$ref": "#/components/schemas/ErrorResponse"
-        '422':
-          description: month is incomplete or malformed
           content:
             application/json:
               schema:
