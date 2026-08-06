@@ -201,7 +201,11 @@ module FinancialReplay
         scores["steward"] += 1 if metrics[:active_recurring_count].to_i.positive?
 
         experience_pattern = /travel|flight|hotel|dining|restaurant|entertainment|holiday|vacation/i
-        scores["explorer"] += 5 if Array(metrics[:top_categories]).any? { |name| name.match?(experience_pattern) }
+        has_experience_category = Array(metrics[:top_categories]).any? do |category|
+          name = category.is_a?(Hash) ? category[:name] : category
+          name.to_s.match?(experience_pattern)
+        end
+        scores["explorer"] += 5 if has_experience_category
 
         scores.max_by { |_key, score| score }.first
       end

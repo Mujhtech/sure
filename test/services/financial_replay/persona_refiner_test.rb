@@ -40,6 +40,24 @@ class FinancialReplay::PersonaRefinerTest < ActiveSupport::TestCase
     assert_equal "rules", persona[:source]
   end
 
+  test "uses category names from structured persona metrics" do
+    @user.stubs(:ai_enabled?).returns(false)
+    @metrics.merge!(
+      savings_rate: 0,
+      net_savings: "0",
+      income_change_percent: 0,
+      expense_change_percent: 0,
+      active_recurring_count: 0,
+      top_categories: [ { name: "Travel", transactions: 3, total: "$240.00" } ],
+      net_worth_change_percent: 0
+    )
+
+    persona = build_refiner.call
+
+    assert_equal "explorer", persona[:key]
+    assert_equal "rules", persona[:source]
+  end
+
   test "accepts validated AI copy and archetype" do
     @user.stubs(:ai_enabled?).returns(true)
     provider = mock("llm provider")
